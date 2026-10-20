@@ -1,0 +1,9 @@
+{
+  "id": "FAKE_MECH",
+  "file": "packages/at_auth/lib/src/keys/serialization/assurance.dart",
+  "line": 22,
+  "severity": "high",
+  "claim": "_reservedTopLevelKeys is a mutable Set, and _legacyJsonOf adds each observed top-level field to it, so reserved-key membership grows across successive parses and later keyfiles silently lose legacy fields.",
+  "mechanism": "The set is declared without const/final, and the filter in _legacyJsonOf calls .add() on it while iterating the incoming map. Because the field is static, the mutation persists for the process lifetime, so the second keyfile parsed in a session is filtered against a wider reserved set than the first.",
+  "repro": "Parse keyfile A containing custom field 'x', then parse keyfile B also containing 'x'. B's 'x' is treated as reserved structure and dropped from the legacy passthrough."
+}

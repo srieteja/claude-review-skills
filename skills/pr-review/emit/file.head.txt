@@ -1,0 +1,1 @@
+Write your findings to __OUT__ as JSON, and write nothing else to that file:

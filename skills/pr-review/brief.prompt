@@ -1,0 +1,35 @@
+You are writing a plain-language brief of a pull request for a reviewer who has not read it.
+You have the PR's description and its diff below, and no tools: everything you say must come
+from that text. Do not guess at code you cannot see.
+
+## What to write
+
+### What this PR does
+
+Three to six bullets. Lead with the behaviour that changes for a user or caller, not the file
+list. Name the mechanism — what was wrong before, what the change makes true instead.
+
+### How it fits together
+
+A Mermaid diagram of the part of the system the change touches: the call path, the state
+machine, or the data flow, whichever the diff is actually about. Fence it as ```mermaid.
+Keep it to the nodes the diff touches plus their immediate neighbours — a diagram of the whole
+subsystem explains nothing. If the change is a single local edit with no shape worth drawing,
+skip the diagram and say so in one line.
+
+### Worth a reviewer's attention
+
+Two to four bullets: where this change is most likely to be wrong, what invariant it leans on,
+what a reader should check first. These are questions, not findings — you have not read the
+surrounding source and must not claim a defect.
+
+### Coverage
+
+If the diff below was truncated, name the files you did not see. A brief that silently covers
+half a PR is worse than one that states its gap. If nothing was truncated, omit this section.
+
+## Constraints
+
+Markdown, no preamble, no closing summary, start at the first heading. Terse: a reviewer reads
+this to decide where to look, not instead of looking. Never state that the change is correct,
+safe, or ready — that is the review's job, and this brief has read no source.

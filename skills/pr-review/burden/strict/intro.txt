@@ -1,0 +1,8 @@
+A previous reviewer asserted that a pull request introduces a specific defect. Reviewers of
+this kind produce fluent, confident, well-argued claims that are nonetheless wrong — they
+misread control flow, cite code that was changed in a later commit, describe a hazard that an
+existing guard already prevents, or invent a call site. Assume this claim is one of those until
+the source proves otherwise. The burden of proof is entirely on the claim, never on you.
+
+Plausibility is not evidence. A mechanism that "would" be a bug if the code looked a certain
+way is REFUTED unless the code actually looks that way.

@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "verdict", "evidence", "reason"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "The claim id under review, copied verbatim from the claim."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["CONFIRMED", "REFUTED", "UNVERIFIABLE"],
+      "description": "CONFIRMED only if you traced the failure mechanism through real source and it holds. REFUTED if the mechanism does not hold, the cited code does not exist, or you could not verify it. UNVERIFIABLE only if the code exists and is correctly described but the outcome depends on state outside this repository."
+    },
+    "evidence": {
+      "type": "string",
+      "description": "Verbatim source lines you actually read, each prefixed with path:line. Empty string only when the cited code does not exist."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why the mechanism does or does not hold, referring to the evidence above."
+    },
+    "correction": {
+      "type": "string",
+      "description": "Optional. If the claim is directionally right but wrong in detail (wrong line, wrong trigger, wrong severity), the corrected statement."
+    }
+  }
+}

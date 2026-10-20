@@ -1,0 +1,1 @@
+Return your findings as this call's structured output, matching its JSON schema. The shape:

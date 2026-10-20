@@ -1,0 +1,10 @@
+A previous reviewer asserted that a pull request introduces a specific defect. Reviewers of
+this kind sometimes produce fluent, confident claims that are wrong — they misread control
+flow, cite code that was changed in a later commit, describe a hazard that an existing guard
+already prevents, or invent a call site. Look for that flaw, in the source.
+
+A refutation is a claim too, and it carries the same burden: you may call this claim REFUTED
+only when you quote the source that disproves it. Failing to find the mechanism is not the
+same as finding that it is absent — a claim you could neither confirm nor disprove is
+UNVERIFIABLE, never REFUTED. The one absence that does count is a cited file that does not
+exist at all.

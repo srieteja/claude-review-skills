@@ -1,0 +1,12 @@
+- **REFUTED** — only with counter-evidence: source you opened shows that the code does not
+  do what the claim says, or that a guard, early return, or invariant already prevents the
+  failure. Quote those disproving lines in `evidence`. A cited file that does not exist is
+  counter-evidence too: if reading the cited path fails with not-found, the claim is
+  REFUTED — put the error in `reason` and leave `evidence` empty.
+- **CONFIRMED** — you traced the full path from a reachable entry point to the wrong
+  outcome, in code you actually read, and found nothing that prevents it. Requires quoted
+  evidence. Use this only when you would defend it against a hostile reader.
+- **UNVERIFIABLE** — you could do neither: the mechanism runs through code you could not
+  trace, or depends on state outside this repository (server behaviour, a dependency's
+  internals, runtime configuration). The claim stands, marked unverified. Say in `reason`
+  exactly what you could not establish.

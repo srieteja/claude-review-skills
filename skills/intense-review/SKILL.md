@@ -1,0 +1,83 @@
+---
+name: intense-review
+description: Maximum-effort adversarial review of a GitHub PR. Opus 5.5 at max effort and Gemini 3.8 Flash (high) review the PR in parallel, then glm-5.3-flash over ollama tries to refute every finding under an evidence burden. There is no dollar cap. Use when the user says "/intense-review <number>" or asks for the deepest or most thorough review of a PR.
+---
+
+# Intense PR review
+
+A thin preset over `~/work/skills/pr-review/pr-review.sh`. It uses the same stages, cache, report
+format and posting rules. Read `~/work/skills/pr-review/SKILL.md` for everything that isn't
+covered here.
+
+## What it runs
+
+| | intense | default `/pr-review` |
+|---|---|---|
+| finders (stage 1) | `claude-opus-5-5` **@max** and `gemini-3.8-flash-high` (via agy), run in parallel | `claude-opus-5-5` @xhigh |
+| refuter (stage 2) | `glm-5.3-flash` via ollama.com | `gemini-3.8-flash-high` via agy |
+| burden | **evidence**: REFUTED needs quoted counter-evidence; an unresolved claim stays in as UNVERIFIABLE | **strict**: an unconfirmed claim counts as refuted |
+| dollar cap | **none** | $8.00 per slice |
+| per-slice ceiling | `PR_REVIEW_S1_TIMEOUT`, default **60m** | 25m |
+| stage-1 parallelism | 4 | 3 |
+| report store | `~/work/reviews-intense/<author>/<N>/` | `~/work/reviews/<author>/<N>/` |
+
+The two stores are separate, so an intense run never overwrites a default review of the same PR.
+
+## Run it
+
+```bash
+~/work/skills/intense-review/intense-review.sh <PR-NUMBER> --keep
+```
+
+- **Launch in the background** (Claude Code: `run_in_background: true`; Hermes: `terminal(background=true, notify_on_complete=true)`), then poll the log. With 2 finders, each slice runs twice, and max-effort Opus slices can take most of an hour.
+- **Run from inside the repo under review.** `ROOT` comes from cwd.
+- **Needs `OLLAMA_API_KEY`.** The Bash tool's shell doesn't read `.zshrc`, so source `~/.env.local` first.
+- **Any `pr-review.sh` option passes through:** `--no-cache`, `--sha`, `--findings`, `--post`, `--inline`.
+
+## Before you run it, tell the user
+
+- **Cost is uncapped.** The timeout is the only ceiling. It applies per slice, per finder. A large PR means many slices × 2 finders at the top effort tier.
+- **Egress.** Every claim, plus every source file the refuter opens, is sent to ollama.com.
+  - The refuter is limited to `Read`, but `Read` can still open absolute paths outside the review tree.
+  - So a PR that injects instructions into it could make it read local files, such as `~/.env.local`.
+  - Don't point this at a PR you have reason to distrust.
+
+## Reading the report
+
+- **Finding ids carry the finder**, e.g. `anthropic.c01-F1` or `agy.c03-F2`.
+  - When both finders flagged the same spot, the finding lists the other finder's id under **Also reported as**.
+  - That is the strongest signal in the report.
+- **UNVERIFIABLE lands in the disputed bucket and stays in the report.** It is the cost of the evidence burden:
+  - Stage 2 no longer silently drops a real bug it couldn't trace.
+  - It also lets through claims nobody could check.
+  - Read the refuter's reason, which says what it could not establish.
+- **Treat Gemini findings against their cited line with suspicion.**
+  - Across repeated runs, agy sometimes resolves paths against the live working tree instead of the PR head (`~/work/skills/pr-review/FINDING-agy-ignores-tree.md`).
+  - The glm refuter runs through `claude -p`, which honours cwd, so it checks each claim against the pinned tree.
+- **ERROR verdicts, gap banners and refuted findings** get the same handling as in `/pr-review`.
+
+## Overrides
+
+| env | default |
+|---|---|
+| `PR_REVIEW_INTENSE_FINDERS` | `anthropic:claude-opus-5-5@max agy:gemini-3.8-flash-high` |
+| `PR_REVIEW_INTENSE_REFUTER` | `ollama:glm-5.3-flash` |
+| `PR_REVIEW_INTENSE_DIR` | `~/work/reviews-intense` |
+| `PR_REVIEW_S1_TIMEOUT` | `60m` |
+| `PR_REVIEW_STAGE1_JOBS` | `4` |
+
+The burden and the missing budget cap are fixed. Without them the preset is just a two-finder `/pr-review`.
+
+## Before trusting a change to the refuter
+
+```bash
+PR_REVIEW_REFUTER=ollama:glm-5.3-flash PR_REVIEW_BURDEN=evidence ~/work/skills/pr-review/selftest.sh
+```
+
+- **Both fakes must come back REFUTED.** Under the evidence burden, the true claim may come back UNVERIFIABLE.
+- **A fake that comes back UNVERIFIABLE means the burden has stopped discriminating.** Don't trust intense reports until it passes again.
+
+## Posting
+
+Posting follows the same rules as `/pr-review`: never unprompted, and ask every time. The report is at
+`~/work/reviews-intense/<author>/<N>/pr<N>-review.md`.

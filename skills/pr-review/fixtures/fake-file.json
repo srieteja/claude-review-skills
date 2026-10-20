@@ -1,0 +1,9 @@
+{
+  "id": "FAKE_FILE",
+  "file": "packages/at_auth/lib/src/keys/key_vault.dart",
+  "line": 1,
+  "severity": "high",
+  "claim": "AtKeyVault.purge() unlinks the user's keyfile before the replacement is written, so an interrupted save destroys the user's keys.",
+  "mechanism": "purge() calls File.deleteSync() on the target path at the top of the save routine, before the serialized bytes are flushed. Any throw between the delete and the write leaves no keyfile on disk.",
+  "repro": "Save keys with a full disk: delete succeeds, write throws, keyfile is gone permanently."
+}

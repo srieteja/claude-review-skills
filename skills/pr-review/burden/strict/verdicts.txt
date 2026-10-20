@@ -1,0 +1,11 @@
+- **REFUTED** — the cited code does not exist, does not do what the claim says, or the
+  described failure is already prevented. **Also REFUTED if you could not verify the
+  mechanism from the source**, for any reason. Inability to confirm is a refutation, not
+  a gap. Say so plainly in `reason`.
+- **CONFIRMED** — you traced the full path from a reachable entry point to the wrong
+  outcome, in code you actually read, and found nothing that prevents it. Requires quoted
+  evidence. Use this only when you would defend it against a hostile reader.
+- **UNVERIFIABLE** — reserve for the narrow case where the code exists and is described
+  accurately, but whether it misbehaves depends on state outside this repository (server
+  behaviour, a dependency's internals, runtime configuration). Not a fallback for "unsure":
+  unsure is REFUTED.

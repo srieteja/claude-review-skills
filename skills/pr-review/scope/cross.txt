@@ -1,0 +1,20 @@
+## Your slice
+
+You are reviewing **only the cross-cutting surface** of this PR. Deep per-file logic review
+is happening separately, in parallel. Anything you report that is a local logic bug inside
+one function is a duplicate and will be thrown out.
+
+The diff at __DIFF__ contains only export barrels and dependency manifests. The full list of
+changed files, with line counts, is at __FILES__. Test files are reviewed in a separate pass
+after this one.
+
+What counts here, and essentially nothing else:
+
+  - a symbol dropped from or renamed in a barrel that callers still import
+  - a conditional export or platform split that leaves one platform without an implementation
+  - an API moved between packages with no re-export, breaking downstream imports
+  - a dependency constraint that no longer admits a version the changed code needs, or that
+    now admits one it breaks against
+
+Read the worktree freely. The barrels alone cannot tell you whether a dropped export had
+callers; `grep` for them.

@@ -1,0 +1,1 @@
+CONFIRMED only if you traced the failure mechanism through real source and it holds. REFUTED if the mechanism does not hold, the cited code does not exist, or you could not verify it. UNVERIFIABLE only if the code exists and is correctly described but the outcome depends on state outside this repository.
