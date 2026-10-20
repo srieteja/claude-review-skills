@@ -4,6 +4,10 @@
 #   stage 2  `refute` dispatches each finding to a validator, one call per claim
 #   stage 3  merge on claim id       -> ~/work/reviews/<author>/<N>/pr<N>-review.md
 #   stage 4  optional `gh pr comment`, confirmed every run
+#   stage 5  CONFIRMED findings by an author on PR_REVIEW_FIX_AUTHORS: autofix.sh opens a fix
+#            PR stacked on theirs and asks them to review it
+#
+# exit 4  stage 5 owed a fix PR and opened none (stale head, a refusal, a red test gate)
 #
 # Targets bash 3.2 (macOS system bash): no mapfile, no `wait -n`, no assoc arrays.
 set -euo pipefail
@@ -50,7 +54,7 @@ CROSS_RE='(pubspec\.yaml|/lib/[^/]+\.dart)$'
 # last-event.jq because refute reads model output too, and is also run on its own.
 LAST_EVENT='include "last-event"; last_event'
 POST=0
-INLINE=0; ASSUME_YES=0; KEEP=0; FINDINGS_IN=""; NO_CACHE=0; SONNET=0; NO_BRIEF=0
+INLINE=0; ASSUME_YES=0; KEEP=0; FINDINGS_IN=""; NO_CACHE=0; SONNET=0; NO_BRIEF=0; NO_FIX=0
 PIN="${PR_REVIEW_SHA:-}"
 
 die() { printf '\033[31mpr-review: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -70,6 +74,7 @@ usage: pr-review.sh <pr-number> [options]
   --jobs <n>          parallel validators (default $JOBS)
   --no-cache          ignore cached stage-1 slices for this head SHA
   --sha <commit>      review an ancestor of the PR head instead of the head
+  --no-fix            skip stage 5, the fix PR for a fix author's confirmed findings
   --keep              keep the work directory for inspection
   -h, --help          this
 
@@ -82,6 +87,8 @@ env: PR_REVIEW_FINDERS ("transport:model[@effort] ...", transports anthropic|oll
      PR_REVIEW_JOBS PR_REVIEW_STAGE1_JOBS PR_REVIEW_CHUNK_BYTES PR_REVIEW_BUDGET_USD (or none)
      PR_REVIEW_TEST_RE PR_REVIEW_SHA PR_REVIEW_DIR (review store, default ~/work/reviews)
      PR_REVIEW_SONNET_MODEL (what --sonnet selects)
+     PR_REVIEW_FIX_AUTHORS (alias PEER_REVIEW_FIX_AUTHORS; default gkc; empty for none) -- stage 5,
+       with autofix.sh's AUTOFIX_* knobs; PR_REVIEW_AUTOFIX (the script run, for tests)
      PR_REVIEW_BRIEF_MODEL PR_REVIEW_BRIEF_EFFORT PR_REVIEW_BRIEF_BUDGET_USD -- stage 0.5
 
   ollama anywhere: needs OLLAMA_API_KEY. The diff, claims and source it reads leave this
@@ -100,6 +107,7 @@ while [ $# -gt 0 ]; do
     --no-cache) NO_CACHE=1 ;;
     --sonnet) SONNET=1 ;;
     --no-brief) NO_BRIEF=1 ;;
+    --no-fix) NO_FIX=1 ;;
     --sha) PIN="$2"; shift ;;
     --findings) FINDINGS_IN="$2"; shift ;;
     --jobs) JOBS="$2"; shift ;;
@@ -130,6 +138,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # once the metadata is fetched. See REVIEW_ROOT below.
 REVIEW_ROOT="${PR_REVIEW_DIR:-$HOME/work/reviews}"
 [ -x "$HERE/refute" ] || die "refute is missing or not executable: $HERE/refute"
+AUTOFIX="${PR_REVIEW_AUTOFIX:-$HERE/autofix.sh}"
+. "$HERE/fix-authors.sh"
 
 # ------------------------------------------------------------ finders and refuter
 NFINDERS=0; SEEN=" "
@@ -671,18 +681,40 @@ if [ -n "$REPO" ]; then
 fi
 
 # ---------------------------------------------------------------- stage 4: post
-[ "$POST" -eq 1 ] || { say "not posting (pass --post to offer it)"; exit 0; }
-if [ "$ASSUME_YES" -ne 1 ]; then
-  [ -t 0 ] || die "stage 4: --post needs a terminal to confirm, or pass --yes"
-  printf '\033[33mPost this to %s as a public comment? [y/N] \033[0m' "$URL" >&2
-  read -r reply
-  case "$reply" in [yY]|[yY][eE][sS]) ;; *) say "not posted; $OUT kept"; exit 0 ;; esac
-fi
-if [ "$INLINE" -eq 1 ]; then
-  [ -s "$OUTDIR/inline.json" ] || die "stage 4: --inline needs $OUTDIR/inline.json"
-  gh api "repos/$REPO/pulls/$PR/reviews" --input "$OUTDIR/inline.json" >/dev/null \
-    || die "stage 4: gh api reviews failed"
-else
-  gh pr comment "$PR" --body-file "$OUT" || die "stage 4: gh pr comment failed"
-fi
-say "posted to $URL"
+post() {
+  [ "$POST" -eq 1 ] || { say "not posting (pass --post to offer it)"; return 0; }
+  if [ "$ASSUME_YES" -ne 1 ]; then
+    [ -t 0 ] || die "stage 4: --post needs a terminal to confirm, or pass --yes"
+    printf '\033[33mPost this to %s as a public comment? [y/N] \033[0m' "$URL" >&2
+    read -r reply
+    case "$reply" in [yY]|[yY][eE][sS]) ;; *) say "not posted; $OUT kept"; return 0 ;; esac
+  fi
+  if [ "$INLINE" -eq 1 ]; then
+    [ -s "$OUTDIR/inline.json" ] || die "stage 4: --inline needs $OUTDIR/inline.json"
+    gh api "repos/$REPO/pulls/$PR/reviews" --input "$OUTDIR/inline.json" >/dev/null \
+      || die "stage 4: gh api reviews failed"
+  else
+    gh pr comment "$PR" --body-file "$OUT" || die "stage 4: gh pr comment failed"
+  fi
+  say "posted to $URL"
+}
+post
+
+# ------------------------------------------------------------- stage 5: fix PR
+# A fix author's CONFIRMED findings get a companion PR on top of theirs, from the head this
+# review read: autofix.sh implements, gates on the touched packages' tests, pushes, opens it
+# and asks the author to review. A PR it owed and didn't open is exit 4, never a quiet 0.
+CONFIRMED="$(jq '[.[] | select(.v.verdict == "CONFIRMED")] | length' "$OUTDIR/merged.json")"
+{ [ "$NO_FIX" -eq 0 ] && [ "$CONFIRMED" -gt 0 ] && is_fix_author "$AUTHOR"; } || exit 0
+[ -z "$PIN" ] || { say "stage 5: --sha reviewed a pinned commit, not the head -- no fix PR"; exit 0; }
+say "stage 5: a fix PR for $AUTHOR's $CONFIRMED confirmed finding(s)"
+rc=0
+FIX="$(env -u AUTOFIX_MODE -u AUTOFIX_FROZEN AUTOFIX_REVIEWER="$AUTHOR" \
+  "$AUTOFIX" "$PR" "$SHA" "$ROOT" "$OUTDIR")" || rc=$?
+printf '%s\n' "$FIX"
+case "$rc:$FIX" in
+  0:*STATUS=opened:*|0:*STATUS=exists:*) exit 0 ;;
+  *STATUS=stale*) warn "stage 5: #$PR moved past ${SHA:0:12} during the review -- NO fix PR opened; re-run the review" ;;
+  *) warn "stage 5: autofix opened NO fix PR for #$PR (exit $rc) -- see above; the findings stand in $OUT" ;;
+esac
+exit 4

@@ -1,6 +1,6 @@
 ---
 name: peer-review
-description: Adversarial review of a teammate's GitHub PR that ends in exactly one of three decisions — approve, a companion fix PR stacked on theirs (only for authors on PEER_REVIEW_FIX_AUTHORS, default gkc), or request changes. Uses intense-review when ollama.com answers, the regular pr-review otherwise. Two steps with a human check in between — prepare (review, decide, freeze) and ship (post exactly what was frozen). Use when the user says "/peer-review <number>" or asks to review, approve, or fix a PR for its author.
+description: Adversarial review of a teammate's GitHub PR that ends in exactly one of three decisions — approve, a companion fix PR stacked on theirs (only for authors on PR_REVIEW_FIX_AUTHORS, default gkc), or request changes. Uses intense-review when ollama.com answers, the regular pr-review otherwise. Two steps with a human check in between — prepare (review, decide, freeze) and ship (post exactly what was frozen). Use when the user says "/peer-review <number>" or asks to review, approve, or fix a PR for its author.
 ---
 
 # Peer review
@@ -40,7 +40,7 @@ source ~/.env.local && ~/work/skills/peer-review/peer-review.sh <PR-NUMBER> [--n
 | var | effect |
 |---|---|
 | `OLLAMA_API_KEY` | absent: no probe, the regular review runs |
-| `PEER_REVIEW_FIX_AUTHORS` | who gets a fix PR instead of a change request. Default `gkc`; space- or comma-separated, case-insensitive; empty for none |
+| `PR_REVIEW_FIX_AUTHORS` (alias `PEER_REVIEW_FIX_AUTHORS`) | who gets a fix PR instead of a change request. Default `gkc`; space- or comma-separated, case-insensitive; empty for none. The engine runs with `--no-fix`: the fix PR opens only on `--ship` |
 | `PR_REVIEW_INTENSE_REFUTER` | the model probed (default `ollama:glm-5.3-flash`) |
 | `PR_REVIEW_INTENSE_DIR`, `PR_REVIEW_DIR` | the two stores (default `~/work/reviews-intense`, `~/work/reviews`) |
 

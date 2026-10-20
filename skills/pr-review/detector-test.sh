@@ -40,7 +40,8 @@ shim() {
   } > "$D/bin/agy"
   chmod +x "$D/bin/agy"
 }
-run() { ( cd "$ROOT" && PATH="$D/bin:$PATH" bash "$HERE/pr-review.sh" "$PR" --sha "$PIN_SHA" --findings "$D/findings.json" ) > "$D/log" 2>&1; }
+# No stage 5: this pins a fix author's PR, and only the detector is under test.
+run() { ( cd "$ROOT" && PATH="$D/bin:$PATH" PR_REVIEW_FIX_AUTHORS="" bash "$HERE/pr-review.sh" "$PR" --sha "$PIN_SHA" --findings "$D/findings.json" ) > "$D/log" 2>&1; }
 
 # --- case 1: untracked scratch is quarantined, including a whole directory ---
 say "case 1: untracked escape is quarantined"

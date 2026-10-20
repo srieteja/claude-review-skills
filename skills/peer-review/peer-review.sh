@@ -3,7 +3,7 @@
 # to read before anything goes public:
 #
 #   approve          nothing CONFIRMED, every finding checked, every slice reviewed
-#   fix              CONFIRMED findings by an author on PEER_REVIEW_FIX_AUTHORS: autofix.sh
+#   fix              CONFIRMED findings by an author on PR_REVIEW_FIX_AUTHORS: autofix.sh
 #                    prepares a companion PR stacked on theirs
 #   request-changes  CONFIRMED findings by anyone else, or a fix autofix.sh wouldn't prepare
 #
@@ -28,7 +28,8 @@
 # exit 1  refused or failed -- including any finding left unchecked (ERROR or no verdict) and
 #         a clean review that didn't cover every slice: neither can support a decision
 #
-# env: PEER_REVIEW_FIX_AUTHORS (default gkc; space- or comma-separated, empty for none)
+# env: PR_REVIEW_FIX_AUTHORS, alias PEER_REVIEW_FIX_AUTHORS (default gkc; space- or comma-separated,
+#        empty for none)
 #      OLLAMA_API_KEY (no key, no probe: the regular review runs)
 #      PR_REVIEW_INTENSE_REFUTER (the model probed), PR_REVIEW_INTENSE_DIR, PR_REVIEW_DIR (stores)
 #      PEER_REVIEW_INTENSE, PEER_REVIEW_REGULAR, PEER_REVIEW_AUTOFIX (the scripts wrapped, for tests)
@@ -44,7 +45,7 @@ INTENSE_STORE="${PR_REVIEW_INTENSE_DIR:-$HOME/work/reviews-intense}"
 REGULAR_STORE="${PR_REVIEW_DIR:-$HOME/work/reviews}"
 # The model intense-review.sh will refute with -- the one call that fails mid-run if ollama can't serve it.
 PROBE_MODEL="${PR_REVIEW_INTENSE_REFUTER:-ollama:glm-5.3-flash}"; PROBE_MODEL="${PROBE_MODEL#ollama:}"
-FIX_AUTHORS="${PEER_REVIEW_FIX_AUTHORS-gkc}"
+. "$HERE/../pr-review/fix-authors.sh"
 
 die()   { printf '\033[31mpeer-review: %s\033[0m\n' "$*" >&2; exit 1; }
 say()   { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
@@ -179,12 +180,13 @@ rm -f "$OUTDIR/merged.json" "$OUTDIR/meta.json"
 say "reviewing #$PR by $AUTHOR ($ENGINE)"
 # Each store passed explicitly, so the engine writes where this script reads. The regular
 # review runs on pr-review.sh's own finders and refuter: a PR_REVIEW_REFUTER=ollama:... left
-# in the environment would put back the very dependency the probe just ruled out.
+# in the environment would put back the very dependency the probe just ruled out. --no-fix:
+# the fix PR is this script's decision, frozen for a human, not the engine's stage 5.
 if [ "$ENGINE" = intense ]; then
-  PR_REVIEW_INTENSE_DIR="$STORE" "$INTENSE" "$PR" ${PASS[@]+"${PASS[@]}"} || die "the review of #$PR failed"
+  PR_REVIEW_INTENSE_DIR="$STORE" "$INTENSE" "$PR" ${PASS[@]+"${PASS[@]}"} --no-fix || die "the review of #$PR failed"
 else
   env -u PR_REVIEW_FINDERS -u PR_REVIEW_REFUTER PR_REVIEW_DIR="$STORE" \
-    "$REGULAR" "$PR" ${PASS[@]+"${PASS[@]}"} || die "the review of #$PR failed"
+    "$REGULAR" "$PR" ${PASS[@]+"${PASS[@]}"} --no-fix || die "the review of #$PR failed"
 fi
 [ -s "$REPORT" ] || die "the review of #$PR wrote no report at $REPORT"
 
@@ -212,19 +214,11 @@ fi
 case "$SHA" in *[!0-9a-f]*|"") SHA="" ;; esac
 [ ${#SHA} -eq 40 ] || die "can't tell which head the review of #$PR read -- see $REPORT"
 
-is_fix_author() {
-  local a
-  for a in $(printf '%s' "$FIX_AUTHORS" | tr ',' ' '); do
-    [ "$(lower "$a")" != "$(lower "$AUTHOR")" ] || return 0
-  done
-  return 1
-}
-
 if [ "$CONFIRMED" -eq 0 ]; then
   [ "$INCOMPLETE" -eq 0 ] \
     || die "slices of #$PR went unreviewed -- an approval would vouch for files no one read; see $REPORT"
   DECISION=approve
-elif is_fix_author; then
+elif is_fix_author "$AUTHOR"; then
   # The SHA the review read, not the live head: autofix refuses as stale if the author
   # pushed during the review.
   rc=0

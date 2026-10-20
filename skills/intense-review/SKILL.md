@@ -32,7 +32,8 @@ The two stores are separate, so an intense run never overwrites a default review
 - **Launch in the background** (Claude Code: `run_in_background: true`; Hermes: `terminal(background=true, notify_on_complete=true)`), then poll the log. With 2 finders, each slice runs twice, and max-effort Opus slices can take most of an hour.
 - **Run from inside the repo under review.** `ROOT` comes from cwd.
 - **Needs `OLLAMA_API_KEY`.** The Bash tool's shell doesn't read `.zshrc`, so source `~/.env.local` first.
-- **Any `pr-review.sh` option passes through:** `--no-cache`, `--sha`, `--findings`, `--post`, `--inline`.
+- **Any `pr-review.sh` option passes through:** `--no-cache`, `--sha`, `--findings`, `--post`, `--inline`, `--no-fix`.
+- **Stage 5 opens a fix PR** on top of a `PR_REVIEW_FIX_AUTHORS` author's PR (default `gkc`) when a finding is CONFIRMED. Exit 4 means it owed one and opened none -- see pr-review's "Auto-fix PRs".
 
 ## Before you run it, tell the user
 

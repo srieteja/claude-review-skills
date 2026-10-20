@@ -218,10 +218,19 @@ from `~/.local/state/pr-review/queue`.
 
 ## Auto-fix PRs
 
-For trusted authors (`PEER_REVIEW_FIX_AUTHORS`, default `gkc`), a confirmed finding can go
-one step further than a report: a companion PR with the fix, against that author's own
-branch. `peer-review.sh` owns that choice and runs `autofix.sh` in prepare/ship modes; the
-watcher no longer calls it directly.
+For trusted authors (`PR_REVIEW_FIX_AUTHORS`, alias `PEER_REVIEW_FIX_AUTHORS`, default `gkc`;
+space- or comma-separated, case-insensitive, empty for none), a confirmed finding goes one step
+further than a report: a companion PR with the fix, against that author's own branch.
+
+- **`/pr-review` and `/intense-review`: stage 5, automatic.** After the report (and stage 4,
+  if `--post`), `autofix.sh` runs one-shot on the head the review read: implement, gate,
+  push, open, and request the author's review. `--no-fix` skips it; so does `--sha`, which
+  reviews a pinned commit rather than the head.
+  - `STATUS=opened:<url>` or `exists:<url>` -> exit 0.
+  - **Anything else -> exit 4** with a `NO fix PR` warning: the head moved (`stale`), a
+    guard refused, or the test gate went red. The report still stands; re-run, or fix by hand.
+- **`/peer-review`: its own decision.** It passes `--no-fix` to its engine and runs
+  `autofix.sh` in prepare mode, so the fix is frozen for a human; `--ship` opens it.
 
 `autofix.sh <pr-number> <sha> <repo-dir> <outdir>` does the work:
 
@@ -243,9 +252,10 @@ watcher no longer calls it directly.
    - `AUTOFIX_MODEL` (default `claude-opus-5-5`), `AUTOFIX_EFFORT` (default `high`) and `AUTOFIX_BUDGET` (USD, default `8.00`, a runaway guard like `PR_REVIEW_BUDGET_USD`; `none` uncaps) set the run, and `AUTOFIX_CLAUDE` swaps the binary. The model comes out as `IMPLEMENTER=` and is frozen as `model` for ship.
 6. **The patch goes onto a fresh worktree at the reviewed SHA, staged with `git apply --index`, and is gated.**
    - Every changed file, new ones included, must sit under a `pubspec.yaml`. A file outside any package is refused, since no test covers it.
-   - Anything under `.github/` is refused outright. A pub workspace has a `pubspec.yaml` at its root, but no test run vouches for a CI change.
+   - A package without `test/` (a pub workspace root) is never `dart test`ed -- that fails on "no test files". Its docs pass ungated; its Dart code and its `pubspec*.yaml`/`analysis_options.yaml` are refused, since every package below depends on them and none of their tests ran here.
+   - Anything under `.github/` is refused outright. No test run vouches for a CI change.
    - A rename counts as both its paths. The package a file leaves is gated too, and a workflow can't leave `.github/` under its new name.
-   - Each touched package gets `dart pub get && dart test`, logged to its own file.
+   - Each touched package with `test/` gets `dart pub get && dart test`, logged to its own file. A docs-only patch gates nothing and says so.
    - Any failure, or a patch that doesn't apply cleanly, stops here with no PR.
 7. **On a clean gate, it commits exactly the staged patch** (none of `pub get`'s debris) on a detached HEAD, so no `fix/…` branch appears in your clone.
    - The commit message is the PR title, then `Reviewed at <sha12>; the PR description carries each finding.` No finding text goes into history.

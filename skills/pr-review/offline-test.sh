@@ -143,7 +143,18 @@ case "$schema" in
     ;;
 esac
 STUB
-chmod +x "$SANDBOX/stub/claude" "$SANDBOX/stub/agy"
+# Stage 5's autofix, stubbed for every run: #2179's author is a default fix author, so the
+# real one would open a PR. Logs its mode, reviewer and argv; answers STUB_AUTOFIX_STATUS.
+cat > "$SANDBOX/stub/autofix" <<'STUB'
+#!/usr/bin/env bash
+f="$(mktemp "$STUB_LOG/autofix.XXXXXX")"
+{ echo "MODE=${AUTOFIX_MODE:-}"; echo "REVIEWER=${AUTOFIX_REVIEWER:-}"; for a; do echo "arg=$a"; done; } > "$f"
+echo "STATUS=${STUB_AUTOFIX_STATUS:-opened:https://github.com/acme/widgets/pull/99}"
+exit "${STUB_AUTOFIX_RC:-0}"
+STUB
+chmod +x "$SANDBOX/stub/claude" "$SANDBOX/stub/agy" "$SANDBOX/stub/autofix"
+export PR_REVIEW_AUTOFIX="$SANDBOX/stub/autofix"
+unset PR_REVIEW_FIX_AUTHORS PEER_REVIEW_FIX_AUTHORS AUTOFIX_MODE
 
 # ------------------------------------------------------------------- jq filters
 # Pure, so checked on fixtures before any stubbed run.
@@ -303,6 +314,58 @@ PATH="$SANDBOX/stub:$PATH" "$HERE/pr-review.sh" "$TO_PR" --no-cache --no-brief \
 check "the e2e package's code was reviewed" \
   jq -e 'any(.[]; (.id | startswith("t")) and (.file | startswith("tests/at_end2end_test/")))' "$TO_DIR/merged.json"
 check "the test pass ran on #2352" grep -qE '    t[0-9][0-9] ' "$SANDBOX/run7.log"
+
+# ------------------------------------------------------------- stage 5: fix PR
+echo "stage 5 -- a fix PR stacked on a fix author's PR"
+META5="$PR_REVIEW_DIR/${AUTHOR#app/}/$PIN_PR/meta.json"
+fix_run() {
+  rm -rf "$STUB_LOG"; mkdir -p "$STUB_LOG"; rc=0
+  PATH="$SANDBOX/stub:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-brief "$@" > "$SANDBOX/fix.log" 2>&1 || rc=$?
+}
+fixes() { ls "$STUB_LOG"/autofix.* 2>/dev/null | wc -l | tr -d ' '; }
+upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+
+PR_REVIEW_FIX_AUTHORS="$AUTHOR" fix_run
+check "precondition: the stub review confirmed a finding" \
+  jq -e 'any(.[]; .v.verdict == "CONFIRMED")' "$PR_REVIEW_DIR/${AUTHOR#app/}/$PIN_PR/merged.json"
+check "a fix author's confirmed findings: one autofix" test "$(fixes)" = 1
+check "  one-shot, not prepare" every autofix '^MODE=$'
+check "  on the PR" every autofix "^arg=$PIN_PR\$"
+check "  at the head the review read" every autofix "^arg=$(jq -r .headRefOid "$META5")\$"
+check "  in the repo under review" every autofix "^arg=$ROOT\$"
+check "  asking the author to review the fix" every autofix "^REVIEWER=${AUTHOR#app/}\$"
+check "  exits 0" test "$rc" = 0
+check "  reports the opened PR" grep -q 'STATUS=opened:' "$SANDBOX/fix.log"
+
+PR_REVIEW_FIX_AUTHORS="$AUTHOR" fix_run --no-fix
+check "--no-fix: no autofix" test "$(fixes)" = 0
+check "  exits 0" test "$rc" = 0
+PR_REVIEW_FIX_AUTHORS="" fix_run
+check "an empty fix-author list: no autofix" test "$(fixes)" = 0
+PR_REVIEW_FIX_AUTHORS="nobody" fix_run
+check "an author not on the list: no autofix" test "$(fixes)" = 0
+PEER_REVIEW_FIX_AUTHORS="$AUTHOR" fix_run
+check "PEER_REVIEW_FIX_AUTHORS is an alias" test "$(fixes)" = 1
+PR_REVIEW_FIX_AUTHORS="nobody, $(upper "${AUTHOR#app/}")" fix_run
+check "the list is comma-separated and case-blind" test "$(fixes)" = 1
+PR_REVIEW_FIX_AUTHORS="$AUTHOR" fix_run --sha "$(jq -r .headRefOid "$META5")"
+check "--sha: a pinned review opens no fix PR" test "$(fixes)" = 0
+check "  and says why" grep -q 'pinned' "$SANDBOX/fix.log"
+
+PR_REVIEW_FIX_AUTHORS="$AUTHOR" STUB_AUTOFIX_STATUS="exists:https://x/pull/98" fix_run
+check "a fix PR already open: exits 0" test "$rc" = 0
+PR_REVIEW_FIX_AUTHORS="$AUTHOR" STUB_AUTOFIX_STATUS=stale STUB_AUTOFIX_RC=1 fix_run
+check "the head moved during the review: exits 4" test "$rc" = 4
+check "  and says no fix PR was opened" grep -q 'NO fix PR' "$SANDBOX/fix.log"
+PR_REVIEW_FIX_AUTHORS="$AUTHOR" STUB_AUTOFIX_STATUS=none STUB_AUTOFIX_RC=1 fix_run
+check "autofix failed: exits 4" test "$rc" = 4
+check "  and says no fix PR was opened" grep -q 'NO fix PR' "$SANDBOX/fix.log"
+
+rm -rf "$STUB_LOG"; mkdir -p "$STUB_LOG"; rc=0
+PATH="$SANDBOX/stub:$PATH" OLLAMA_API_KEY=test-key-not-real PR_REVIEW_FIX_AUTHORS="$AUTHOR" \
+  STUB_AUTOFIX_STATUS=stale STUB_AUTOFIX_RC=1 \
+  "$HERE/../intense-review/intense-review.sh" "$PIN_PR" --no-brief > "$SANDBOX/fix.log" 2>&1 || rc=$?
+check "intense-review: the same stage 5, and its exit 4" test "$rc" = 4
 
 [ "$fail" -eq 0 ] && { echo; printf '\033[32mall offline checks passed\033[0m\n'; } \
                   || { echo; printf '\033[31moffline checks FAILED\033[0m\n'; }

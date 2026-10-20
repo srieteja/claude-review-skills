@@ -74,7 +74,7 @@ STUB
 chmod +x "$SB/bin/"*
 export PATH="$SB/bin:$PATH" PEER_REVIEW_INTENSE="$SB/bin/intense-review.sh" \
        PEER_REVIEW_REGULAR="$SB/bin/pr-review.sh" PEER_REVIEW_AUTOFIX="$SB/bin/autofix.sh"
-unset PEER_REVIEW_FIX_AUTHORS PR_REVIEW_INTENSE_REFUTER PR_REVIEW_FINDERS
+unset PEER_REVIEW_FIX_AUTHORS PR_REVIEW_FIX_AUTHORS PR_REVIEW_INTENSE_REFUTER PR_REVIEW_FINDERS
 
 finding() {  # finding <verdict> <claim>
   printf '{"claim":"%s","file":"lib/a.dart","line":3,"mechanism":"reset skips _@x_ and @override","v":{"verdict":"%s"}}' "$2" "$1"
@@ -112,6 +112,7 @@ setup; run 7 --no-cache
 check "probe passes: exits 0"                      rc_is 0
 check "  runs intense, options passed through"     logged intense-review.sh "7 --no-cache"
 check "  never runs the regular review"            [ "$(calls pr-review.sh)" = 0 ]
+check "  tells the engine its fix PR is ours"      logged intense-review.sh "7 --no-cache --no-fix"
 check "  says so"                                  said "ENGINE=intense"
 check "  probes the refuter's model, not a default" logged curl '"model":"glm-5.3-flash"'
 check "  the key goes on stdin"                    logged curl-config "Bearer k-secret-123"
@@ -128,7 +129,7 @@ check "  never calls curl"                         [ "$(calls curl)" = 0 ]
 check "  runs the regular review"                  [ "$(calls pr-review.sh)" = 1 ]
 check "  says so"                                  said "ENGINE=regular"
 check "  with pr-review's own defaults, no ollama leaking in from env" \
-      logged pr-review.sh "7 REFUTER= FINDERS="
+      logged pr-review.sh "7 --no-fix REFUTER= FINDERS="
 check "  decides in the regular store"             decided "$REG" approve
 check "  nothing in the intense store"             [ ! -e "$INT/decision" ]
 
