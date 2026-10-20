@@ -221,6 +221,7 @@ check "the refuter ran inside the tree, not the caller's cwd" every agy-refute '
 check "the default refuter prompt carries the strict burden" logged prompt 'Inability to confirm is a refutation'
 check "the default finder ran at xhigh" every claude-find '^arg=xhigh$'
 check "the default finder is budget-capped" every claude-find '^arg=--max-budget-usd$'
+check "the finder ran without your settings and hooks" every claude-find '^arg=--setting-sources$'
 
 # ------------------------------------------------------------------ stage 0.5 brief
 check "the brief was written beside the report" test -f "$BRIEF"

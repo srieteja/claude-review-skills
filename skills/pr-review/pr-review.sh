@@ -459,10 +459,11 @@ review_slice() {
     > "$WORK/chunks/$key.prompt"
   case "$F_TRANSPORT" in
     anthropic)
+      # --setting-sources "": no user settings, hooks or CLAUDE.md in the finder session.
       ( cd "$TREE" && ${ANTHROPIC_TIMEOUT_BIN:+"$ANTHROPIC_TIMEOUT_BIN" "$S1_TIMEOUT"} \
           claude -p "$(cat "$WORK/chunks/$key.prompt")" \
           --model "$F_MODEL" ${F_EFFORT:+--effort "$F_EFFORT"} --output-format json --add-dir "$WORK" \
-          --strict-mcp-config ${BUDGET_CAP:+--max-budget-usd "$BUDGET_CAP"} \
+          --strict-mcp-config --setting-sources "" ${BUDGET_CAP:+--max-budget-usd "$BUDGET_CAP"} \
           --allowedTools Read Grep Glob Write "Bash(git diff:*)" "Bash(git log:*)" \
           --disallowedTools Edit NotebookEdit Task WebSearch WebFetch \
       ) > "$WORK/chunks/$key.json" 2>"$WORK/chunks/$key.err" || true
