@@ -77,10 +77,10 @@ unverifiable='[{"id":"agy.c01-F1","file":"pkg/lib/a.dart","line":1,"claim":"Poss
 # A fresh case: alice's branch feature-x at $SHA in a one-package Dart repo, pushed to a bare
 # origin at remotes/acme/widgets.git; the PR's live head starts at $SHA.
 setup() {
-  n=$((n + 1)); C="$SB/case$n"; mkdir -p "$C/remotes/acme" "$C/log" "$C/store" "$C/repo/pkg/lib"
+  n=$((n + 1)); C="$SB/case$n"; mkdir -p "$C/remotes/acme" "$C/log" "$C/store" "$C/repo/pkg/lib" "$C/repo/pkg/test"
   git init -q -b feature-x "$C/repo"
   git -C "$C/repo" config user.name tester; git -C "$C/repo" config user.email tester@example.com
-  printf 'name: pkg\n' > "$C/repo/pkg/pubspec.yaml"; printf 'old\n' > "$C/repo/pkg/lib/a.dart"
+  printf 'name: pkg\n' > "$C/repo/pkg/pubspec.yaml"; printf 'old\n' > "$C/repo/pkg/lib/a.dart"; : > "$C/repo/pkg/test/a_test.dart"
   git -C "$C/repo" add -A; git -C "$C/repo" commit -qm init
   git clone -q --bare "$C/repo" "$C/remotes/acme/widgets.git"
   git -C "$C/repo" remote add origin "$C/remotes/acme/widgets.git"

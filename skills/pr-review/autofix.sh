@@ -231,21 +231,29 @@ git -C "$ROOT" worktree add --detach "$TREE" "$SHA" >/dev/null || die "worktree 
 # nothing that `dart pub get` leaves in the tree.
 git -C "$TREE" apply --index "$PATCH" || { warn "patch does not apply cleanly to $SHA -- no PR"; exit 1; }
 
-# Test gate: every touched package, nearest pubspec.yaml walking up from each changed file.
-# Fail closed -- a file no package's tests cover, or a package whose tests we couldn't run,
-# blocks the PR the same as a red test. CI config is refused outright: a workspace root has
-# a pubspec.yaml too, but no test run says anything about a workflow change. --no-renames,
-# so a move counts as both its paths: the package it leaves is gated too, and a workflow
-# can't leave .github/ under a destination's name.
-PACKAGES=""
+# Test gate: every touched package with a test/ dir, nearest pubspec.yaml walking up from each
+# changed file. Fail closed -- Dart code no package's tests cover, a file outside any package,
+# or a package whose tests we couldn't run blocks the PR the same as a red test. A package
+# without test/ (a pub workspace root) gates nothing: its docs need no test, but its Dart code
+# and its workspace-wide config (pubspec, analysis_options) are refused. CI config is refused
+# outright. --no-renames, so a move counts as both its paths: the package it leaves is gated
+# too, and a workflow can't leave .github/ under a destination's name.
+PACKAGES=""; CHANGED=0
 while IFS= read -r -d '' f; do
+  CHANGED=1
   case "$f" in .github/*) warn "the patch changes $f -- CI config is out of a fix PR's reach; no PR"; exit 1 ;; esac
   d="$(dirname "$f")"
   while [ "$d" != . ] && [ ! -f "$TREE/$d/pubspec.yaml" ]; do d="$(dirname "$d")"; done
   [ -f "$TREE/$d/pubspec.yaml" ] || { warn "the patch changes $f, outside any Dart package -- no test covers it; no PR"; exit 1; }
-  PACKAGES="$PACKAGES$d"$'\n'
+  if [ -d "$TREE/$d/test" ]; then PACKAGES="$PACKAGES$d"$'\n'; continue; fi
+  case "$f" in
+    *.dart) warn "the patch changes $f, Dart code no package's tests cover; no PR"; exit 1 ;;
+    pubspec*.yaml|*/pubspec*.yaml|analysis_options.yaml|*/analysis_options.yaml)
+      warn "the patch changes $f, config every package under $d depends on; no PR"; exit 1 ;;
+  esac
 done < <(git -C "$TREE" diff --cached --name-only --no-renames -z)
-[ -n "$PACKAGES" ] || { warn "the patch changes nothing -- no PR"; exit 1; }
+[ "$CHANGED" = 1 ] || { warn "the patch changes nothing -- no PR"; exit 1; }
+[ -n "$PACKAGES" ] || say "no Dart package touched -- nothing to test"
 
 i=0
 while IFS= read -r pkg; do

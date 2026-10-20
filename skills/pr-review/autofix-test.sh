@@ -58,7 +58,7 @@ cat > "$SB/bin/dart" <<'STUB'
 echo "$*" >> "$STUB_LOG/dart"
 # pub get leaves what the real one does: a lockfile and .dart_tool/, neither part of the fix.
 if [ "$1 $2" = "pub get" ]; then : > pubspec.lock; mkdir -p .dart_tool; fi
-if [ "$1" = test ]; then [ -z "${STUB_DART_STDIN:-}" ] || cat >/dev/null; exit "${STUB_DART_RC:-0}"; fi
+if [ "$1" = test ]; then pwd >> "$STUB_LOG/dart.cwd"; [ -z "${STUB_DART_STDIN:-}" ] || cat >/dev/null; exit "${STUB_DART_RC:-0}"; fi
 STUB
 chmod +x "$SB/bin/"*
 export PATH="$SB/bin:$PATH"
@@ -77,8 +77,10 @@ setup() {
   git init -q -b main "$C/repo"
   git -C "$C/repo" config user.name tester; git -C "$C/repo" config user.email tester@example.com
   printf 'name: pkg\n' > "$C/repo/pkg/pubspec.yaml"
+  mkdir -p "$C/repo/pkg/test"; printf 'void main() {}\n' > "$C/repo/pkg/test/a_test.dart"
   case " $* " in *" workspace "*) printf 'name: root\nworkspace: [pkg]\n' > "$C/repo/pubspec.yaml" ;; esac
-  case " $* " in *" twopkg "*) mkdir -p "$C/repo/pkg2"; printf 'name: pkg2\n' > "$C/repo/pkg2/pubspec.yaml" ;; esac
+  case " $* " in *" twopkg "*) mkdir -p "$C/repo/pkg2/test"; printf 'name: pkg2\n' > "$C/repo/pkg2/pubspec.yaml"
+                               printf 'void main() {}\n' > "$C/repo/pkg2/test/a_test.dart" ;; esac
   case " $* " in *" ci "*) mkdir -p "$C/repo/.github/workflows"; printf 'on: push\n' > "$C/repo/.github/workflows/ci.yaml" ;; esac
   printf 'old\n' > "$C/repo/pkg/lib/a.dart"
   git -C "$C/repo" add -A; git -C "$C/repo" commit -qm init
@@ -152,6 +154,7 @@ refs()    { git -C "$C/repo" for-each-ref --format='%(refname) %(objectname)'; }
 refs_untouched() { [ "$(refs)" = "$REFS_BEFORE" ]; }
 impl_gone() { [ ! -e "$(cat "$C/log/claude.cwd")" ]; }
 ran_in_own_tree() { case "$(cat "$C/log/claude.cwd")" in "$C/repo"|"$C/repo"/*) return 1 ;; esac; }
+only_tested_in() { [ -s "$C/log/dart.cwd" ] && ! grep -qv -- "$1\$" "$C/log/dart.cwd"; }
 pushed_lacks() { ! git --git-dir="$C/remotes/acme/widgets.git" cat-file -e "fix/pr7-review-findings:$1"; }
 URL=https://github.com/acme/widgets/pull/99
 
@@ -316,9 +319,30 @@ check "CI config, even under a root pubspec: refused" rc_is 1
 check "  names it"                             grep -qF .github/workflows/ci.yaml "$C/stderr"
 check "  never pushes"                         unpushed
 
+setup workspace; patch docs/x.md features/y.feature; run
+check "docs beside a fix in a workspace: opened" said "STATUS=opened:$URL"
+check "  gates only the package with tests"     only_tested_in /pkg
+check "  never runs dart test at the root"      [ "$(grep -c . "$C/log/dart.cwd")" = 1 ]
+
+setup workspace; patch --no-fix docs/x.md; run
+check "a docs-only patch: opened"              said "STATUS=opened:$URL"
+check "  runs no tests"                        never dart test
+check "  says nothing was tested"              grep -qF "no Dart package touched" "$C/stderr"
+
+setup workspace; mkdir -p "$C/repo/test"; echo x > "$C/repo/test/local"; patch docs/x.md; run
+check "a root test/ only in your clone: root not gated" only_tested_in /pkg
+
 setup workspace; patch tool/x.dart; run
-check "a root-package file in a workspace: gated at the root" rc_is 0
-check "  and opened"                           said "STATUS=opened:$URL"
+check "Dart outside any tested package: refused" rc_is 1
+check "  names it"                             grep -qF tool/x.dart "$C/stderr"
+check "  never pushes"                         unpushed
+
+setup workspace; patch analysis_options.yaml; run
+check "workspace-wide config: refused"         rc_is 1
+check "  names it"                             grep -qF analysis_options.yaml "$C/stderr"
+
+setup workspace; patch pubspec.yaml; run
+check "the workspace pubspec: refused"         rc_is 1
 
 setup twopkg; patch_mv pkg/lib/a.dart pkg2/lib/a.dart; run
 check "a file moved between packages: both gated" [ "$(grep -c '^test' "$C/log/dart")" = 2 ]
