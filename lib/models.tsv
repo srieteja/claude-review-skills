@@ -1,0 +1,16 @@
+# preset	role	spec (transport:model[@effort]), best first. resolve_models (models.sh) takes the
+# first reachable row; a regular review has one finder, an intense one the best per transport,
+# at most two. The refuter is the best reachable row of a family no finder is from; a second
+# finder that would leave no such refuter is dropped.
+regular	finder	anthropic:claude-opus-5-5@xhigh
+regular	finder	agy:gemini-3.8-flash-high
+regular	finder	ollama:glm-5.3
+regular	refuter	agy:gemini-3.8-flash-high
+regular	refuter	ollama:glm-5.3-flash
+regular	refuter	anthropic:claude-sonnet-5-5
+intense	finder	anthropic:claude-opus-5-5@max
+intense	finder	agy:gemini-3.8-flash-high
+intense	finder	ollama:glm-5.3
+intense	refuter	ollama:glm-5.3-flash
+intense	refuter	agy:gemini-3.8-flash-high
+intense	refuter	anthropic:claude-sonnet-5-5

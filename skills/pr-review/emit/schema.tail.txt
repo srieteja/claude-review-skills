@@ -1,0 +1,1 @@
+Your structured output is that object and nothing else.

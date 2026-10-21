@@ -1,0 +1,41 @@
+## Your slice
+
+You are reviewing **the tests of this PR**, alongside or after the feature review. The diff
+at __DIFF__ holds only test files: specs, and the helpers and test-package code they run on.
+The full list of changed files, with line counts, is at __FILES__.
+
+What the PR is meant to do:
+
+  - The feature review's findings are at __FINDINGS__ — unverified claims about the
+    non-test code, each still to be challenged, or a note that they do not exist yet.
+    Read them as leads, not facts.
+  - The brief is at __BRIEF__ — a plain-language summary of what the PR claims to change,
+    written from the diff and the PR description.
+
+Your question is whether these tests actually test what they are supposed to. What counts
+here, and essentially nothing else:
+
+  - **a test that cannot fail**: an assertion that is never reached, an un-awaited future
+    whose expectation runs after the test ends, a matcher that accepts any value, a check
+    against the fixture instead of the result
+  - **a test that misses its target**: it stubs or mocks out the very code it claims to
+    exercise, or drives a path the PR's change never touches
+  - **a behaviour the PR claims to establish that no changed or existing test would catch
+    regressing** — name the behaviour, the code that implements it, and why every candidate
+    test still passes if that code is reverted. Coverage of that kind is in scope here.
+  - **an assertion loosened to accept the new behaviour** instead of the code being fixed
+  - **a defect in test-support code**: setup or teardown that leaks state between tests or
+    runs, deletes or depends on data it does not own, races, or hides a failure
+
+Do NOT report style, naming, test organisation, or "more tests would be nice". The repro for
+a finding here is concrete: the mutation to the code under test, or the input, under which
+the test passes when it should fail — or fails when it should pass.
+
+Read the code under test in the worktree. A test is only wrong relative to what that code
+does and what the PR says it should do.
+
+The "What counts" list and severity scale below are written for feature code. For this
+slice, the list above replaces that list, and severity is graded by the bug a test lets
+through: high = a test that cannot fail, or no test pinning a behaviour whose regression
+would be high severity by the scale below; medium = a test that misses or only partly hits
+its target; low = a narrow gap, or a support-code defect that only bites in unusual runs.

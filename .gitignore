@@ -1,0 +1,6 @@
+plans/
+config.env
+__pycache__/
+.DS_Store
+.claude-cache/
+.cc-writes/

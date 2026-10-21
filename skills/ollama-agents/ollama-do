@@ -1,0 +1,489 @@
+#!/usr/bin/env bash
+# ollama-do -- delegate's twin. Hands a task to `claude` itself, pointed at Ollama's cloud
+# endpoint instead of Anthropic's, in an isolated worktree; gets a reviewable patch back.
+#
+# The executor here is not a bespoke loop: Ollama's Anthropic-Messages-API compat layer means
+# the agentic harness is already `claude`. This script only adds env isolation, the worktree,
+# and the same escape guard `agy-do` uses -- it does not reimplement an agent.
+#
+# --transport anthropic runs the same protocol on the caller's own Claude login instead of
+# ollama.com: the worktree/patch/resume contract is transport-independent, so a caller that needs
+# a model only Anthropic serves (standup's fix button) reuses this driver rather than a third copy.
+#
+#   ollama-do --task plan.md --root .                # one slice
+#   ollama-do --tasks slices/ --root . --jobs 2       # fan-out, one worktree each
+#   ollama-do --ask "where is X?" --tree <dir> --root .
+#   ollama-do --resume <session-id> --tree <dir> --task delta.md --root .
+#   ollama-do --map files/ --schema schema.json       # no worktree, no repo required
+#
+# Writes <work>/<id>.{patch,stat,files,raw.json,err,resume,base} and a verdict per task.
+# --map writes <work>/results.json instead; it never touches git.
+#
+# exit 0  every task settled, repo untouched
+# exit 3  same, but the executor wrote into --root; the files are in <work>/escaped
+# exit 1  refused: the executor modified tracked files or git metadata in --root
+#
+# Targets bash 3.2 (macOS system bash): no mapfile, no `wait -n`, no assoc arrays.
+set -euo pipefail
+
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/../../lib/common.sh"
+load_config
+
+TRANSPORT="${OLLAMA_DO_TRANSPORT:-ollama}"
+# Resolved per transport after flag parsing: no single default model is served by both.
+MODEL="${OLLAMA_DO_MODEL:-}"
+MAP_MODEL="${OLLAMA_DO_MAP_MODEL:-glm-5.3-flash}"
+MODEL_EXPLICIT=0
+# No print-timeout flag on the real claude CLI (agy-do's --print-timeout has no analogue) --
+# enforced externally by wrapping the invocation in timeout/gtimeout instead.
+TIMEOUT="${OLLAMA_DO_TIMEOUT:-45m}"
+# Pro tier is a request-rate budget, not a documented concurrency ceiling. Default to 1 until a
+# real fan-out records the ceiling; --jobs raises it deliberately, never by assumption.
+JOBS="${OLLAMA_DO_JOBS:-1}"
+LEDGER="${OLLAMA_DO_LEDGER:-$HOME/.local/state/ollama-do/ledger}"
+CLAUDE_BIN="${OLLAMA_DO_BIN:-claude}"
+
+MODE=""; TASK=""; TASKS=""; ASK=""; MAPDIR=""; SCHEMA=""
+ROOT=""; BASE="HEAD"; TREE=""; RESUME=""; WORK=""
+DIRTY=0; KEEP=0
+
+die()  { printf '\033[31mollama-do: %s\033[0m\n' "$*" >&2; exit 1; }
+say()  { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
+# The executor writes its own account of the run to <id>.answer on EVERY verdict, including the
+# ones that changed nothing. Printing it only on OK is how two real NO-OP runs produced zero
+# evidence -- the reason was sitting on disk and got dropped. Every non-OK verdict shows it.
+reason() { [ -s "$WORK/$1.answer" ] && { warn "$1 said:"; sed 's/^/      /' "$WORK/$1.answer" >&2; }; return 0; }
+
+usage() {
+  cat >&2 <<USAGE
+usage: ollama-do (--task <file> | --tasks <dir> | --ask <question> | --map <dir>) [options]
+
+  --task <file>       a single task/plan file to implement
+  --tasks <dir>       implement every *.md in <dir>, one worktree each, in parallel
+  --ask <question>    read-only question against an existing --tree (no edits)
+  --map <dir>         one-shot structured extraction per file, direct API, no worktree/repo
+  --schema <json>     JSON schema for --map's response format (required with --map)
+  --root <repo>       repo to guard (required for --task/--tasks/--ask)
+  --tree <dir>        reuse an existing worktree (required for --ask and --resume)
+  --resume <id>       resume a prior claude session (the result's session_id); send only the delta
+  --base <ref>        worktree base (default $BASE)
+  --dirty             carry uncommitted tracked edits from --root into the worktree
+  --work <dir>        scratch + output dir (default: a fresh mktemp)
+  --jobs <n>          tasks/files in flight at once (default $JOBS)
+  --transport <t>     ollama (ollama.com, default) | anthropic (your own Claude login; no --map)
+  --model <id>        model for --task/--tasks/--ask (default glm-5.3 | claude-opus-5-5 by transport)
+  --timeout <dur>     wall-clock timeout per task, via timeout/gtimeout (default $TIMEOUT)
+  --keep              keep worktrees after the run (default: remove, work dir stays)
+  -h, --help          this
+
+env: OLLAMA_API_KEY (ollama transport) OLLAMA_DO_TRANSPORT OLLAMA_DO_MODEL OLLAMA_DO_MAP_MODEL OLLAMA_DO_TIMEOUT
+     OLLAMA_DO_JOBS OLLAMA_DO_LEDGER OLLAMA_DO_BIN
+USAGE
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --task) TASK="$2"; MODE=task; shift ;;
+    --tasks) TASKS="$2"; MODE=tasks; shift ;;
+    --ask) ASK="$2"; MODE=ask; shift ;;
+    --map) MAPDIR="$2"; MODE=map; shift ;;
+    --schema) SCHEMA="$2"; shift ;;
+    --root) ROOT="$2"; shift ;;
+    --tree) TREE="$2"; shift ;;
+    --resume) RESUME="$2"; shift ;;
+    --base) BASE="$2"; shift ;;
+    --dirty) DIRTY=1 ;;
+    --work) WORK="$2"; shift ;;
+    --jobs) JOBS="$2"; shift ;;
+    --model) MODEL="$2"; MODEL_EXPLICIT=1; shift ;;
+    --transport) TRANSPORT="$2"; shift ;;
+    --timeout) TIMEOUT="$2"; shift ;;
+    --keep) KEEP=1 ;;
+    -h|--help) usage ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
+
+[ -n "$MODE" ] || usage
+[ -n "$RESUME" ] && [ -z "$TREE" ] && die "--resume needs --tree (the worktree to resume in)"
+
+case "$TRANSPORT" in
+  # --- OLLAMA_API_KEY is a hard prerequisite for every ollama mode; check it before anything else
+  # so a missing key produces this instruction, never a stack trace three layers down. -----------
+  ollama)    MODEL="${MODEL:-glm-5.3}"
+             [ -n "${OLLAMA_API_KEY:-}" ] || die "OLLAMA_API_KEY is not set. Create one at https://ollama.com/settings/keys and: export OLLAMA_API_KEY=..." ;;
+  # --map is a direct ollama.com /api/chat call, not a claude session: there is no Anthropic
+  # equivalent to route it to, so refuse rather than silently bill ollama.com anyway.
+  anthropic) MODEL="${MODEL:-claude-opus-5-5}"
+             [ "$MODE" = "map" ] && die "--map is ollama.com-only; it has no --transport anthropic form" ;;
+  *)         die "unknown --transport '$TRANSPORT' (ollama | anthropic)" ;;
+esac
+
+
+# ollama_env()/anthropic_env() come from lib/transport-env.sh, shared verbatim with selftest.sh
+# so the live pin and the real tool cannot drift apart. They read $MODEL, parsed above.
+executor_env() { if [ "$TRANSPORT" = "anthropic" ]; then anthropic_env "$@"; else ollama_env "$@"; fi; }
+
+# --- --map needs no repo and no worktree: it is 200 one-shot structured-extraction calls direct
+# against /api/chat, and this skill must work from ~/work itself, which is not a git repo. -------
+if [ "$MODE" = "map" ]; then
+  [ -n "$SCHEMA" ] || die "--map needs --schema"
+  command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH"
+  WORK="${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/ollama-do.XXXXXX")}"
+  mkdir -p "$WORK"
+  # --model drives the loop modes only; --map runs its own cheaper tier. Saying so beats letting
+  # the flag be silently discarded and the run be quietly billed against the wrong model.
+  [ "$MODEL_EXPLICIT" = "1" ] \
+    && warn "--model applies to --task/--tasks/--ask only; --map is using '$MAP_MODEL'. Set OLLAMA_DO_MAP_MODEL=<id> to change it."
+  OLLAMA_API_KEY="$OLLAMA_API_KEY" exec python3 "$HERE/map.py" --dir "$MAPDIR" --schema "$SCHEMA" \
+    --model "$MAP_MODEL" --work "$WORK" --jobs "$JOBS"
+fi
+
+# --- loop modes (task/tasks/ask) cut worktrees, so --root must be a real repo. -------------------
+for bin in git python3 "$CLAUDE_BIN"; do
+  command -v "$bin" >/dev/null 2>&1 || die "$bin not found on PATH"
+done
+[ -n "$ROOT" ] || usage
+ROOT="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)" \
+  || die "--root is not a git repository"
+
+# Default the work dir OUTSIDE $ROOT: worktrees and scratch living inside the guarded repo would
+# register as escapes against themselves.
+WORK="${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/ollama-do.XXXXXX")}"
+mkdir -p "$WORK" "$(dirname "$LEDGER")"
+
+TIMEOUT_BIN=""
+for b in timeout gtimeout; do command -v "$b" >/dev/null 2>&1 && { TIMEOUT_BIN="$b"; break; }; done
+[ -z "$TIMEOUT_BIN" ] && warn "no timeout/gtimeout on PATH -- running without a wall-clock cap"
+
+# --- startup capability gate. GET /api/show is unauthenticated -- no key spent checking whether
+# the model even advertises tool use before paying for inference against it. --------------------
+# The gate reads the `capabilities` ARRAY, not the whole body. /api/show returns
+# {capabilities, details, model_info, modified_at}, and details/model_info are free-form vendor
+# metadata -- a substring test for "tools" anywhere in that body passes any model whose blurb
+# happens to mention the word. Verified live: glm-5.3 answers capabilities
+# ["completion","thinking","tools"]. python3 is already a hard dependency (parse_envelope, map.py).
+# OLLAMA_DO_SHOW_STUB accepts a literal JSON body so the gate itself is testable offline.
+precheck_model() {
+  local show rc=0
+  case "${OLLAMA_DO_SHOW_STUB:-}" in
+    "")       [ "${OLLAMA_DO_SKIP_SHOW_CHECK:-0}" = "1" ] && return 0
+              show="$(curl -fsS "https://ollama.com/api/show" -d "{\"model\":\"$MODEL\"}" 2>/dev/null)" \
+                || die "could not reach ollama.com to check '$MODEL' capabilities" ;;
+    no-tools) show='{"capabilities":["completion","thinking"]}' ;;
+    \{*)      show="$OLLAMA_DO_SHOW_STUB" ;;
+    *)        return 0 ;;
+  esac
+  printf '%s' "$show" | python3 -c '
+import json, sys
+try:
+    caps = json.load(sys.stdin).get("capabilities") or []
+except Exception:
+    sys.exit(2)
+sys.exit(0 if "tools" in caps else 1)
+' || rc=$?
+  case "$rc" in
+    0) : ;;
+    2) die "could not parse ollama.com/api/show for '$MODEL' -- refusing before inference" ;;
+    *) die "model '$MODEL' does not advertise the 'tools' capability -- refusing before inference" ;;
+  esac
+}
+# The gate asks ollama.com about the model; Anthropic models are not listed there.
+[ "$TRANSPORT" = "ollama" ] && precheck_model
+
+# ---------------------------------------------------------------------------------------------
+# The guard. This is the security boundary of the whole design.
+#
+# `git status --porcelain` on $ROOT is what a naive guard would use, and it is not sufficient:
+# $TREE/.git is a pointer into $ROOT/.git/worktrees/<id>, so a `git commit`, `git stash`, or
+# `git branch -f` run from inside the worktree mutates $ROOT's HEAD/refs/stash invisibly to
+# porcelain. agy-do's repo_state() (delegate/agy-do) solves this for its own case -- snapshot
+# porcelain plus HEAD, all refs, and the stash, then diff before/after.
+#
+# All refs (not just HEAD/local branches) plus the stash, so a branch -f or a stash push run
+# from inside the worktree is caught even though porcelain alone misses it. A left-behind stash
+# entry is treated as tampering, not scratch: it's repo state, not a loose file, so there's
+# nothing to safely auto-move -- it falls into the same "not a bare untracked path" bucket as a
+# tracked-file edit and refuses. Mirrors agy-do's snapshot_root()/guard_repo() (delegate/agy-do)
+# exactly, so both drivers make the same call on the same evidence.
+snapshot_root() {
+  local r="$1"
+  git -C "$r" status --porcelain | LC_ALL=C sort
+  echo "--- HEAD"
+  git -C "$r" rev-parse HEAD
+  echo "--- refs"
+  git -C "$r" for-each-ref --format='%(refname) %(objectname)' | LC_ALL=C sort
+  echo "--- stash"
+  git -C "$r" stash list
+}
+
+guard_repo() { # pre-snapshot-file post-snapshot-file -> return 0 clean / 3 quarantined / 1 refused
+  local pre="$1" post="$2"
+  diff -q "$pre" "$post" >/dev/null 2>&1 && return 0
+  local escaped
+  escaped="$(diff "$pre" "$post" | grep '^>' | sed 's/^> //' || true)"
+  # Only a bare untracked-file porcelain line ("?? path") is recoverable by moving the file.
+  # Anything else added to the snapshot -- a tracked-file diff line, a HEAD/refs/stash change --
+  # means the executor reached outside its worktree in a way a file move can't undo. Refuse.
+  if printf '%s\n' "$escaped" | grep -qvE '^\?\? '; then
+    warn "the executor changed tracked files or git metadata in $ROOT, left in place:
+$(printf '%s\n' "$escaped" | sed 's/^/      /')"
+    return 1
+  fi
+  mkdir -p "$WORK/escaped"
+  printf '%s\n' "$escaped" | sed 's/^?? //' | while read -r p; do
+    [ -n "$p" ] && [ -e "$ROOT/$p" ] || continue
+    mkdir -p "$WORK/escaped/$(dirname "$p")"
+    mv "$ROOT/$p" "$WORK/escaped/$p"
+  done
+  warn "the executor wrote into $ROOT, quarantined in $WORK/escaped"
+  return 3
+}
+# ---------------------------------------------------------------------------------------------
+
+# The envelope is a top-level JSON ARRAY of typed events (system/init, assistant turns,
+# rate_limit_event, ..., ending in one {"type":"result",...}) -- not the flat object agy emits.
+# Verified against a live `claude -p ... --output-format json` call. `is_error` is the only
+# trustworthy success signal: a rate-limited turn can carry `"subtype":"success"` right next to
+# `"is_error":true`, so checking subtype alone turns a real failure into a silent NO-OP.
+parse_envelope() {
+  python3 - "$1" <<'PY'
+import json, sys
+raw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+
+def load(s):
+    try:
+        return json.loads(s, strict=False)
+    except Exception:
+        return None
+
+def find_result(v):
+    if isinstance(v, dict) and v.get('type') == 'result':
+        return v
+    if isinstance(v, list):
+        for item in reversed(v):
+            if isinstance(item, dict) and item.get('type') == 'result':
+                return item
+    return None
+
+parsed = load(raw)
+d = find_result(parsed) if parsed is not None else None
+
+# Salvage path: the envelope did not parse whole (truncated run, interleaved noise). Scan object
+# starts from the END and cap the attempts. The result event is the LAST element, so the tail is
+# where it is; scanning forward with an unbounded budget is O(n^2) over a multi-megabyte envelope
+# with no result event at all -- precisely the crashed-run case that most needs to fail fast.
+BUDGET = 200
+if d is None:
+    starts, i = [], raw.find('{')
+    while i != -1 and len(starts) < 200000:
+        starts.append(i)
+        i = raw.find('{', i + 1)
+    for i in reversed(starts[-BUDGET:] if len(starts) > BUDGET else starts):
+        cand = load(raw[i:])
+        d = find_result(cand) or (cand if isinstance(cand, dict) else None)
+        if d is not None:
+            break
+if d is None:
+    sys.exit(1)
+
+u = d.get('usage') or {}
+is_error = bool(d.get('is_error', True))
+# cache_creation is captured next to cache_read on purpose. Measured live against ollama.com:
+# creation is 0 (both the flat field and the nested ephemeral_{5m,1h} breakdown) while read comes
+# back at 2944 against input_tokens of 1513 -- a "read" larger than the input, from a cache
+# nothing ever wrote to. The compat layer echoes the field without honouring it. Recording both
+# makes that self-evident in the ledger instead of leaving cache_read to read like a discount.
+fields = ['FAILED' if is_error else 'SUCCESS', d.get('session_id', ''),
+          u.get('input_tokens', 0), u.get('output_tokens', 0),
+          u.get('cache_read_input_tokens', 0), u.get('cache_creation_input_tokens', 0)]
+print('\t'.join(str(x) for x in fields))
+print(d.get('result', '') or '')
+PY
+}
+
+# $9 is the last unbraced positional -- a 10th column must be written "${10}" or bash reads it as
+# "$1" followed by a literal 0. Braced here so the next column added inherits the right habit.
+# cache_creation is APPENDED as column 12, never inserted -- rows already on disk keep valid
+# indices 1-11 for anything parsing this file with awk.
+ledger_line() { # id verdict status in out cache secs files cache_creation
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "$ROOT")" "$1" "$MODEL" \
+    "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9}" >> "$LEDGER" \
+    || warn "ledger write failed ($LEDGER) -- continuing, verdict still printed below"
+}
+
+# ---------------------------------------------------------------------------------------------
+# One task: worktree, invoke, extract, verdict.
+# ---------------------------------------------------------------------------------------------
+
+run_claude() { # id prompt-file tree [readonly]
+  id="$1"; pf="$2"; tr="$3"; ro="${4:-0}"
+  # A nested claude resolves relative paths -- and, for an open-ended prompt with no path at
+  # all, its whole sense of "this repo" -- against its own cwd, not against --add-dir. Verified
+  # live: --add-dir alone left an explicit "read tracked.txt" unable to find a file that
+  # existed only in $tr, while the invoking shell's cwd was reported as the repo instead. The
+  # cd below is what actually confines the session to $tr; --add-dir is kept only as a second
+  # grant, not the mechanism.
+  # --strict-mcp-config + --setting-sources "" isolate this nested session from the user's own
+  # ~70 skills, MCP servers, hooks and CLAUDE.md -- a leak here is a silent path back to the
+  # user's own subscription and settings, not a crash. executor_env() closes the same leak on the
+  # transport side: under ollama an inherited ANTHROPIC_API_KEY outranks the ANTHROPIC_AUTH_TOKEN
+  # set there, so without the strip the request goes to Anthropic on the user's own key and never
+  # reaches ollama.com at all; under anthropic an inherited BASE_URL would do the reverse.
+  set -- --add-dir "$tr" --model "$MODEL" --output-format json \
+          --strict-mcp-config --setting-sources ""
+  [ -n "$RESUME" ] && set -- "$@" --resume "$RESUME"
+  # A read-only intent is not a read-only capability: withhold the permission bypass for --ask.
+  [ "$ro" = "0" ] && set -- "$@" --dangerously-skip-permissions
+  prompt="$(cat "$pf")"
+  rc=0
+  (cd "$tr" && executor_env ${TIMEOUT_BIN:+"$TIMEOUT_BIN" "$TIMEOUT"} "$CLAUDE_BIN" -p "$prompt" "$@") \
+    > "$WORK/$id.raw.json" 2> "$WORK/$id.err" || rc=$?
+  return $rc
+}
+
+do_task() { # id task-file
+  id="$1"; tf="$2"
+  start=$(date +%s)
+
+  if [ -n "$TREE" ]; then
+    tr="$TREE"
+  else
+    tr="$WORK/tree/$id"
+    mkdir -p "$WORK/tree"
+    git -C "$ROOT" worktree add --detach "$tr" "$BASE" >/dev/null 2>&1 \
+      || { echo "FAILED" > "$WORK/$id.verdict"; warn "$id: could not create worktree"; return 0; }
+    if [ "$DIRTY" = "1" ]; then
+      if ! git -C "$ROOT" diff HEAD --quiet 2>/dev/null; then
+        git -C "$ROOT" diff HEAD | git -C "$tr" apply - 2>/dev/null
+      fi
+      # `git diff HEAD` only ever covers tracked files -- untracked new files (e.g. a doc that was
+      # never `git add`ed) are invisible to it and would silently vanish from the worktree.
+      git -C "$ROOT" ls-files --others --exclude-standard | while IFS= read -r f; do
+        mkdir -p "$tr/$(dirname "$f")" && cp -P "$ROOT/$f" "$tr/$f"
+      done || true
+      git -C "$tr" -c user.email=ollama-do -c user.name=ollama-do \
+        commit -aqm "carried dirty state" 2>/dev/null || true
+    fi
+  fi
+  tr="$(cd "$tr" && pwd -P)"
+  git -C "$tr" rev-parse HEAD > "$WORK/$id.base"
+
+  # Same hazard as agy-do, worse tell on the ask side: an unattended model answers
+  # conversationally ("let me know if you approve") and print mode reports that as success with
+  # an empty diff, or -- for --ask -- a clarifying question comes back indistinguishable from a
+  # real answer. implement.prompt/ask.prompt make the harness own this instead of every caller.
+  if [ -n "$ASK" ]; then tpl="$HERE/ask.prompt"; else tpl="$HERE/implement.prompt"; fi
+  pf="$WORK/$id.prompt"
+  [ "$tf" = "$pf" ] && die "task file collides with the wrapped prompt path: $pf"
+  sed -e "/__TASK__/r $tf" -e "/__TASK__/d" "$tpl" > "$pf"
+
+  rc=0
+  run_claude "$id" "$pf" "$tr" "${ASK:+1}" || rc=$?
+
+  status=""; sid=""; tin=0; tout=0; tcache=0; tcreate=0
+  if parse_envelope "$WORK/$id.raw.json" > "$WORK/$id.parsed" 2>/dev/null; then
+    IFS=$'\t' read -r status sid tin tout tcache tcreate < "$WORK/$id.parsed"
+    [ -n "$sid" ] && printf '%s' "$sid" > "$WORK/$id.resume"
+    tail -n +2 "$WORK/$id.parsed" > "$WORK/$id.answer"
+  else
+    warn "$id: could not parse the executor's output; see $WORK/$id.raw.json"
+    status="UNPARSEABLE"
+  fi
+
+  base="$(cat "$WORK/$id.base")"
+  if [ -z "$ASK" ]; then
+    git -C "$tr" add -A >/dev/null 2>&1 || true
+    git -C "$tr" diff "$base" > "$WORK/$id.patch" 2>/dev/null || : > "$WORK/$id.patch"
+    git -C "$tr" diff --stat "$base" > "$WORK/$id.stat" 2>/dev/null || : > "$WORK/$id.stat"
+    git -C "$tr" diff --name-only "$base" > "$WORK/$id.files" 2>/dev/null || : > "$WORK/$id.files"
+  else
+    : > "$WORK/$id.patch"; : > "$WORK/$id.stat"; : > "$WORK/$id.files"
+  fi
+
+  if [ -n "$ASK" ]; then
+    verdict=$([ "$status" = "SUCCESS" ] && echo "OK" || echo "FAILED")
+  elif [ -s "$WORK/$id.patch" ]; then
+    verdict=$([ "$rc" = "0" ] && [ "$status" = "SUCCESS" ] && echo "OK" || echo "PARTIAL")
+  else
+    # Claimed success and changed nothing -> NO-OP only if it actually succeeded. A rate-limited
+    # turn reads subtype:"success" but is_error:true, which parse_envelope already turned into
+    # status=FAILED above -- so this branch cannot mistake it for a no-op.
+    verdict=$([ "$rc" = "0" ] && [ "$status" = "SUCCESS" ] && echo "NO-OP" || echo "FAILED")
+  fi
+
+  echo "$verdict" > "$WORK/$id.verdict"
+  nfiles=$(wc -l < "$WORK/$id.files" | tr -d ' ')
+  ledger_line "$id" "$verdict" "$status" "$tin" "$tout" "$tcache" "$(( $(date +%s) - start ))" "$nfiles" "$tcreate"
+  printf '    %-24s %-8s %s files\n' "$id" "$verdict" "$nfiles" >&2
+}
+
+# ---------------------------------------------------------------------------------------------
+# Dispatch.
+# ---------------------------------------------------------------------------------------------
+IDS=""
+if [ -n "$ASK" ]; then
+  printf '%s\n' "$ASK" > "$WORK/ask.question"
+  IDS="ask"; TASKFILE_ask="$WORK/ask.question"
+elif [ -n "$TASK" ]; then
+  [ -s "$TASK" ] || die "no task at $TASK"
+  IDS="task"; TASKFILE_task="$TASK"
+else
+  [ -d "$TASKS" ] || die "--tasks is not a directory: $TASKS"
+  for f in "$TASKS"/*.md; do
+    [ -e "$f" ] || die "no *.md task files in $TASKS"
+    n="$(basename "$f" .md)"
+    IDS="$IDS $n"
+    eval "TASKFILE_${n//[^a-zA-Z0-9_]/_}=\"\$f\""
+  done
+fi
+
+snapshot_root "$ROOT" > "$WORK/repo.pre"
+
+say "$MODEL: ${IDS// /, } (work: $WORK)"
+for id in $IDS; do
+  var="TASKFILE_${id//[^a-zA-Z0-9_]/_}"
+  eval "tf=\$$var"
+  if [ "$(echo "$IDS" | wc -w | tr -d ' ')" = "1" ]; then
+    do_task "$id" "$tf"
+  else
+    do_task "$id" "$tf" &
+    while [ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$JOBS" ]; do sleep 1; done
+  fi
+done
+wait
+
+if [ -z "$TREE" ]; then
+  for id in $IDS; do
+    [ "$KEEP" = "1" ] || git -C "$ROOT" worktree remove --force "$WORK/tree/$id" 2>/dev/null || true
+  done
+  git -C "$ROOT" worktree prune 2>/dev/null || true
+fi
+
+echo >&2
+for id in $IDS; do
+  v="$(cat "$WORK/$id.verdict" 2>/dev/null || echo FAILED)"
+  case "$v" in
+    OK)      [ -n "$ASK" ] && { say "answer:"; cat "$WORK/$id.answer"; } \
+                           || say "$id OK -- review: $WORK/$id.patch" ;;
+    PARTIAL) warn "$id PARTIAL -- the executor did not finish but wrote files. Read every hunk of $WORK/$id.patch before applying."; reason "$id" ;;
+    NO-OP)   warn "$id NO-OP -- the executor reported success and changed nothing. This is a failure, not a pass."; reason "$id" ;;
+    *)       warn "$id $v -- see $WORK/$id.err"; reason "$id" ;;
+  esac
+done
+
+if [ "$(echo "$IDS" | wc -w | tr -d ' ')" -gt 1 ]; then
+  DUPES="$(cat "$WORK"/*.files 2>/dev/null | LC_ALL=C sort | uniq -d || true)"
+  [ -n "$DUPES" ] && warn "slices touch the same files -- apply in sequence and re-check:
+$(printf '%s\n' "$DUPES" | sed 's/^/      /')"
+fi
+
+snapshot_root "$ROOT" > "$WORK/repo.post"
+guard_rc=0
+guard_repo "$WORK/repo.pre" "$WORK/repo.post" || guard_rc=$?
+exit "$guard_rc"

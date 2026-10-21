@@ -1,0 +1,1 @@
+CONFIRMED only if you traced the failure mechanism through real source and it holds. REFUTED only with counter-evidence: quoted source showing the code does not do what the claim says or that the failure is already prevented, or a read of the cited file that failed with not-found. UNVERIFIABLE if you could neither confirm nor disprove it from the source.

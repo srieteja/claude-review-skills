@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# refute -- dispatch each claim to a validator model and try to knock it down.
+#
+# One call per claim, in parallel. The validator is prompted to REFUTE, not to check:
+# a validator handed "are these correct?" returns ~100% CONFIRMED and the output looks
+# identical to a real pass. Isolation per claim forces per-claim source tracing.
+#
+#   refute --findings f.json --tree <dir> --root <repo> [--work <dir>] [--jobs N]
+#          [--transport agy|anthropic|ollama] [--model <id>] [--cross]
+#          [--burden strict|evidence]
+#
+# Reads   <findings.json>  {"findings":[{"id","file","line","claim","mechanism","repro"}]}
+# Writes  <work>/verdicts/<id>.json  {"id","verdict","evidence","reason","model"}, one per
+#         claim. Never fewer than it was given -- a claim whose validator failed twice, or
+#         whose every model was out of quota, comes back ERROR, because a missing verdict is
+#         an UNCHECKED claim, not a passing one.
+#
+# exit 0  every claim has a verdict, repo untouched
+# exit 3  same, but the validator wrote into --root; the files are in <work>/escaped
+# exit 1  refused: the validator modified *tracked* files in --root, left in place
+#
+# Targets bash 3.2 (macOS system bash): no mapfile, no `wait -n`, no assoc arrays.
+set -euo pipefail
+
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/../../lib/common.sh"
+load_config
+
+TRANSPORT=agy
+MODEL=""
+BURDEN=strict
+CROSS=0
+TIMEOUT="${PR_REVIEW_AGY_TIMEOUT:-20m}"
+JOBS="${PR_REVIEW_JOBS:-4}"
+FINDINGS=""; TREE=""; ROOT=""; WORK=""
+
+die() { printf '\033[31mrefute: %s\033[0m\n' "$*" >&2; exit 1; }
+say() { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
+
+usage() {
+  cat >&2 <<USAGE
+usage: refute --findings <file> --tree <dir> --root <repo> [options]
+
+  --findings <file>   findings.json to refute
+  --tree <dir>        source the validator reads -- a clone at the reviewed SHA
+  --root <repo>       repo to guard: anything appearing here during the run escaped
+  --work <dir>        scratch + output dir (default: a fresh mktemp, kept on escape)
+  --jobs <n>          claims in flight at once (default $JOBS)
+  --transport <t>     agy (default) | anthropic -- claude -p on your Claude login, read-only
+                      | ollama -- claude -p via ollama.com, Read-only
+  --model <id>        validator model (agy default: gemini-3.8-flash-high; else required)
+                      agy: on a per-model quota error, falls back through
+                      PR_REVIEW_REFUTER_FALLBACK (default: gemini-3.1-pro-high
+                      claude-opus-4-6-thinking; "" pins --model)
+  --cross             when the primary is unavailable (quota, billing, auth), fall through to
+                      agy models of the other family than the finder that made the claim:
+                      an anthropic.* finding goes to gemini-*, an agy.* finding to claude-*
+  --burden <b>        strict (default): unverifiable is REFUTED
+                      evidence: REFUTED needs quoted counter-evidence, else UNVERIFIABLE
+  --timeout <dur>     per-call ceiling (default $TIMEOUT)
+  -h, --help          this
+
+env: PR_REVIEW_GEMINI_MODEL PR_REVIEW_REFUTER_FALLBACK PR_REVIEW_AGY_TIMEOUT PR_REVIEW_JOBS
+     OLLAMA_API_KEY
+USAGE
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --findings) FINDINGS="$2"; shift ;;
+    --tree) TREE="$2"; shift ;;
+    --root) ROOT="$2"; shift ;;
+    --work) WORK="$2"; shift ;;
+    --jobs) JOBS="$2"; shift ;;
+    --transport) TRANSPORT="$2"; shift ;;
+    --model) MODEL="$2"; shift ;;
+    --cross) CROSS=1 ;;
+    --burden) BURDEN="$2"; shift ;;
+    --timeout) TIMEOUT="$2"; shift ;;
+    -h|--help) usage ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
+
+[ -n "$FINDINGS" ] && [ -n "$TREE" ] && [ -n "$ROOT" ] || usage
+[ -s "$FINDINGS" ] || die "no findings at $FINDINGS"
+[ -d "$TREE" ] || die "--tree is not a directory: $TREE"
+TREE="$(cd "$TREE" && pwd -P)"
+# --root is required rather than defaulted: the validator may resolve a workspace outside
+# --tree, and the guard below has to know which repo to watch.
+git -C "$ROOT" rev-parse --show-toplevel >/dev/null 2>&1 \
+  || die "--root is not a git repository: $ROOT"
+jq -e '.findings | type == "array"' "$FINDINGS" >/dev/null 2>&1 \
+  || die "malformed findings.json: .findings is not an array"
+
+# Assets resolve from this script's own directory, so the toolkit can live anywhere.
+[ -d "$HERE/burden/$BURDEN" ] || die "unknown --burden: $BURDEN (strict|evidence)"
+
+[ -f "$HERE/agy-quota.sh" ] || die "missing $HERE/agy-quota.sh"
+. "$HERE/agy-quota.sh"
+
+AGY_FALLBACK="${PR_REVIEW_REFUTER_FALLBACK-gemini-3.1-pro-high claude-opus-4-6-thinking}"
+# agy meters quota per model, so a spent model is no reason to leave claims unchecked.
+# Set PR_REVIEW_REFUTER_FALLBACK="" to pin the head model alone.
+agy_chain() { # head-model
+  agy_models "$1" "$AGY_FALLBACK" | tr ' ' '\n' | sed 's/^/agy:/' | tr '\n' ' ' | sed 's/ $//'
+}
+GEMINI="${PR_REVIEW_GEMINI_MODEL:-gemini-3.8-flash-high}"
+case "$TRANSPORT" in
+  agy)
+    MODEL="${MODEL:-$GEMINI}"
+    CHAIN="$(agy_chain "$MODEL")"
+    NEED="git jq agy" ;;
+  anthropic|ollama)
+    [ -n "$MODEL" ] || die "--transport $TRANSPORT needs --model"
+    CHAIN="$TRANSPORT:$MODEL"
+    [ "$CROSS" = 0 ] || CHAIN="$CHAIN $(agy_chain "$GEMINI")"
+    NEED="git jq claude"; [ "$CROSS" = 0 ] || NEED="$NEED agy" ;;
+  *) die "unknown --transport: $TRANSPORT (agy|anthropic|ollama)" ;;
+esac
+for bin in $NEED; do
+  command -v "$bin" >/dev/null 2>&1 || die "$bin not found on PATH"
+done
+
+TIMEOUT_BIN=""
+case "$TRANSPORT" in anthropic|ollama)
+  for b in timeout gtimeout; do command -v "$b" >/dev/null 2>&1 && { TIMEOUT_BIN="$b"; break; }; done
+  [ -n "$TIMEOUT_BIN" ] || die "--transport $TRANSPORT needs timeout or gtimeout on PATH" ;;
+esac
+[ "$TRANSPORT" != ollama ] || [ -n "${OLLAMA_API_KEY:-}" ] || die "--transport ollama needs OLLAMA_API_KEY"
+
+WORK="${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/refute.XXXXXX")}"
+mkdir -p "$WORK/claims" "$WORK/verdicts" "$WORK/exhausted"
+
+# The burden swaps the prompt's opening and verdict definitions, and the schema's verdict
+# description, as one unit: a prompt and schema that disagree on the rule get the rule
+# resolved by whichever the model weighs more.
+B="$HERE/burden/$BURDEN"
+sed -e "/__INTRO__/r $B/intro.txt" -e "/__INTRO__/d" \
+    -e "/__VERDICTS__/r $B/verdicts.txt" -e "/__VERDICTS__/d" \
+    "$HERE/refute.prompt" > "$WORK/refute.prompt"
+jq --rawfile d "$B/verdict.desc.txt" '.properties.verdict.description = ($d | rtrimstr("\n"))' \
+  "$HERE/verdict.schema.json" > "$WORK/verdict.schema.json"
+# agy takes --json-schema as a path; claude takes it inline.
+SCHEMA_INLINE="$(jq -c . "$WORK/verdict.schema.json")"
+
+COUNT="$(jq '.findings | length' "$FINDINGS")"
+[ "$COUNT" -gt 0 ] || { say "nothing to refute"; exit 0; }
+
+# A validator proving a claim may write and run scratch code, and agy has no flag that
+# confines where; where it resolves relative paths has varied across builds
+# (FINDING-agy-ignores-tree.md). So detect the escape instead of pretending it is
+# prevented -- anything that appears in $ROOT across the run came from here.
+repo_state() { git -C "$ROOT" status --porcelain | LC_ALL=C sort; }
+repo_state > "$WORK/repo.pre"
+
+say "${CHAIN// / -> } refuting $COUNT claim(s), $BURDEN burden, $JOBS at a time"
+# Whether a failed call means the model itself is gone for now, as opposed to a bad answer.
+# agy says so on stderr; claude reports a spent, unpaid or rejected account only in the
+# result event.
+unavailable() { # transport err-file raw-file
+  case "$1" in
+    agy) agy_quota_hit "$2" ;;
+    *) jq -e -L "$HERE" 'include "last-event"; quota_hit' "$3" >/dev/null 2>&1 ;;
+  esac
+}
+
+# --cross never hands a claim to the family that made it: that model shares the finder's
+# blind spots, so its agreement would prove nothing.
+eligible() { # id entry
+  [ "$CROSS" = 1 ] || return 0
+  case "${1%%.*}:${2#*:}" in
+    anthropic:claude-*|agy:gemini-*) return 1 ;;
+  esac
+}
+
+ask_validator() { # id attempt entry
+  id="$1"; attempt="$2"; t="${3%%:*}"; m="${3#*:}"
+  # Every transport starts in the tree. agy additionally gets --add-dir; claude has no tool
+  # that writes or runs anything (on ollama, the CLAUDE_CODE_SIMPLE surface minus Bash and
+  # Edit). anthropic and ollama differ only in the environment that routes the call.
+  if ( cd "$TREE" && case "$t" in
+         agy)
+           agy_env agy --sandbox --add-dir "$TREE" --model "$m" --output-format json \
+             --print-timeout "$TIMEOUT" --json-schema "$WORK/verdict.schema.json" \
+             -p="$(cat "$WORK/claims/$id.prompt")" ;;
+         anthropic|ollama)
+           "${t}_env" "$TIMEOUT_BIN" "$TIMEOUT" \
+             claude -p "$(cat "$WORK/claims/$id.prompt")" --model "$m" \
+             --output-format json --json-schema "$SCHEMA_INLINE" \
+             --strict-mcp-config --setting-sources "" \
+             --disallowedTools Bash Write Edit NotebookEdit Task WebSearch WebFetch ;;
+       esac ) > "$WORK/claims/$id.raw.$attempt" 2>"$WORK/claims/$id.err.$attempt"
+  then
+    # agy: a bare object. claude: a transcript array.
+    # .model: burden calibration is per model, so a verdict says which one judged it.
+    jq -c -L "$HERE" --arg id "$id" --arg m "$m" \
+      'include "last-event"; last_event | .structured_output // empty | .id = $id | .model = $m' \
+      "$WORK/claims/$id.raw.$attempt" > "$WORK/verdicts/$id.json" 2>/dev/null || true
+  fi
+  [ -s "$WORK/verdicts/$id.json" ]
+}
+
+refute_one() {
+  id="$1"
+  jq -c --arg id "$id" '.findings[] | select(.id == $id)' "$FINDINGS" > "$WORK/claims/$id.json"
+  sed -e "/__CLAIM__/r $WORK/claims/$id.json" -e "/__CLAIM__/d" "$WORK/refute.prompt" > "$WORK/claims/$id.prompt"
+  # One retry per model: a dropped verdict is an UNCHECKED claim, and the failures seen so
+  # far have been transient rather than the model declining. Two silent failures is a real
+  # signal. A quota error is neither -- that model is spent for hours or days -- so it goes
+  # straight to the next model, and leaves a marker so claims still queued skip it.
+  attempt=0; spent=""; quota=0
+  for e in $CHAIN; do
+    eligible "$id" "$e" || continue
+    m="${e#*:}"
+    if [ -e "$WORK/exhausted/$e" ]; then spent="${spent:+$spent, }$m"; quota=1; continue; fi
+    for try in 1 2; do
+      attempt=$((attempt + 1))
+      ask_validator "$id" "$attempt" "$e" && break 2
+      if unavailable "${e%%:*}" "$WORK/claims/$id.err.$attempt" "$WORK/claims/$id.raw.$attempt"; then
+        : > "$WORK/exhausted/$e"; spent="${spent:+$spent, }$m"; quota=1; continue 2
+      fi
+    done
+    quota=0; break
+  done
+  if [ ! -s "$WORK/verdicts/$id.json" ]; then
+    if [ "$quota" = 1 ]; then
+      reason="every validator model was out of quota or unavailable ($spent); this claim was NOT checked"
+    else
+      reason="the validator produced no structured verdict on two attempts; this claim was NOT checked"
+    fi
+    jq -nc --arg id "$id" --arg r "$reason" '{id:$id, verdict:"ERROR", evidence:"", reason:$r}' \
+      > "$WORK/verdicts/$id.json"
+  fi
+  printf '    %s %s\n' "$id" "$(jq -r '.verdict' "$WORK/verdicts/$id.json")" >&2
+}
+
+for id in $(jq -r '.findings[].id' "$FINDINGS"); do
+  refute_one "$id" &
+  while [ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$JOBS" ]; do sleep 1; done
+done
+wait
+
+repo_state > "$WORK/repo.post"
+ESCAPED="$(comm -13 "$WORK/repo.pre" "$WORK/repo.post")"
+[ -n "$ESCAPED" ] || exit 0
+
+# A modified *tracked* file could be the user's own work, edited while this ran; moving it
+# would destroy it. Refuse instead. Untracked scratch is unambiguously the validator's, so
+# quarantine that and report it -- exit 3 tells the caller to keep $WORK, or the evidence
+# goes out with the scratch.
+DIRTIED="$(printf '%s\n' "$ESCAPED" | grep -v '^?? ' || true)"
+[ -n "$DIRTIED" ] && die "the validator modified tracked files in $ROOT, left in place:
+$DIRTIED"
+mkdir -p "$WORK/escaped"
+printf '%s\n' "$ESCAPED" | sed 's/^?? //' | while read -r p; do
+  mkdir -p "$WORK/escaped/$(dirname "$p")"
+  mv "$ROOT/$p" "$WORK/escaped/$p"
+done
+warn "the validator wrote into $ROOT, quarantined in $WORK/escaped:
+$(printf '%s\n' "$ESCAPED" | sed 's|^?? |      |')"
+exit 3

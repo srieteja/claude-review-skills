@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings", "read"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "file", "line", "severity", "claim", "mechanism", "repro"],
+        "properties": {
+          "id": {"type": "string", "description": "F1, F2, F3... in severity order, highest first."},
+          "file": {"type": "string", "description": "Path relative to the tree."},
+          "line": {"type": "integer", "description": "Line in THIS tree."},
+          "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+          "claim": {"type": "string", "description": "One sentence: what breaks."},
+          "mechanism": {"type": "string", "description": "The path from entry point to wrong outcome, naming the functions and lines traced."},
+          "repro": {"type": "string", "description": "Concrete inputs or state -> the wrong result."}
+        }
+      }
+    },
+    "read": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Every source file opened, paths relative to the tree."
+    }
+  }
+}

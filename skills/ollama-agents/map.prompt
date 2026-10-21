@@ -1,0 +1,10 @@
+Extract structured data from the file below, strictly per the JSON schema you were given as the
+response format. This is a one-shot extraction call, not a conversation: there is no follow-up
+turn to ask a clarifying question in, so if a field is not present in the file, use the schema's
+own rules for absence (null, empty, or omission) rather than guessing a value.
+
+Do not add commentary outside the JSON response. Do not editorialize about the file's quality
+or content — extract only what the schema asks for.
+
+--- FILE ---
+__FILE__

@@ -1,0 +1,17 @@
+## Your slice
+
+You are reviewing **one slice of a larger PR**. The diff at __DIFF__ is a subset. Other
+slices are being reviewed in parallel by other reviewers; the cross-package export surface
+is being reviewed separately. Do not try to cover the whole PR.
+
+The full list of changed files, with line counts, is at __FILES__. You can read any file in
+the worktree, and should whenever your slice's code depends on it — a caller in another
+slice is exactly the context that tells you whether a change here is a defect.
+
+**Test files are left out of your diff**; a separate pass reviews them after you. They are
+still in the worktree. Read them: a test is the clearest statement of what the author
+believed the code guarantees.
+
+Report only defects whose mechanism runs through code **in this slice**. A bug you notice in
+another slice's diff is not yours — it will be covered there, and reporting it produces a
+duplicate that the verifier will refute on scope.
