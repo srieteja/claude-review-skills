@@ -150,7 +150,7 @@ no_local_branch() { ! git -C "$C/repo" rev-parse -q --verify refs/heads/fix/pr7-
 # arg <flag> -- the value claude was given for <flag>
 arg()     { grep -A1 -xF -- "$1" "$C/log/claude.args" | sed -n 2p; }
 has_arg() { grep -qxF -- "$1" "$C/log/claude.args"; }
-refs()    { git -C "$C/repo" for-each-ref --format='%(refname) %(objectname)'; }
+refs()    { git -C "$C/repo" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags refs/stash; }   # local refs, not origin's mirror
 refs_untouched() { [ "$(refs)" = "$REFS_BEFORE" ]; }
 impl_gone() { [ ! -e "$(cat "$C/log/claude.cwd")" ]; }
 ran_in_own_tree() { case "$(cat "$C/log/claude.cwd")" in "$C/repo"|"$C/repo"/*) return 1 ;; esac; }
