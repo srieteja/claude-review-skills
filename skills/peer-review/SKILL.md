@@ -88,6 +88,24 @@ source ~/.env.local && ~/work/skills/peer-review/peer-review.sh <PR-NUMBER> --sh
   - A blank `body.md` on request-changes is refused.
 - **fix** runs autofix's ship (see pr-review's SKILL.md): `STATUS=opened:<url>`, then `REVIEWER=requested|skipped|failed:<login>`. `failed` usually means the author lacks repo access — say so, don't retry.
 - **A decision in both stores** is refused ("both"). Re-run prepare.
+- **`decision/posted`** holds the review or fix-PR URL once anything has shipped. A second ship prints `STATUS=exists:<url>`.
+
+## Overriding the decision (`--decide`)
+
+```bash
+source ~/.env.local && ~/work/skills/peer-review/peer-review.sh <PR-NUMBER> --decide approve|request-changes|fix [--body-file f]
+```
+
+This re-freezes a different decision from the review already on disk. It never re-reviews and never posts. Ship it afterwards as usual.
+
+| case | behavior |
+|---|---|
+| `fix` | runs autofix prepare **regardless of `PR_REVIEW_FIX_AUTHORS`**: a human chose this. It needs at least one CONFIRMED finding. If autofix refuses, the earlier decision stands (exit 1). |
+| `request-changes` | the body comes from the CONFIRMED findings, or from `--body-file`. With neither, it is refused. |
+| `approve` | any frozen `autofix/` is dropped |
+| refused | after ship (`posted` exists), when the PR is already decided that way with no new body, `--body-file` with `fix`, or alongside `--ship` or review options |
+
+While prepare or `--decide` runs, `<store>/<author>/<N>/running` holds its pid. The `/reviews` dashboard reads it to tell a live run from a crashed one.
 
 ## Unattended (the watcher)
 
