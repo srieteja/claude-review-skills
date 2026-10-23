@@ -329,6 +329,10 @@ check "fix: ships the frozen patch, asking the author" \
 check "  relays the opened PR"                     said "STATUS=opened:https://github.com/acme/widgets/pull/99"
 check "  relays the reviewer request"              said "REVIEWER=requested:carol"
 check "  posts no review of its own"               [ "$(posts)" = 0 ]
+check "  records where the fix PR went"            [ "$(cat "$INT/decision/posted")" = https://github.com/acme/widgets/pull/99 ]
+run 7 --ship
+check "  a second ship opens nothing more"         [ "$(grep -c MODE=ship "$C/log/autofix")" = 1 ]
+check "  and says where the first went"            said "STATUS=exists:https://github.com/acme/widgets/pull/99"
 setup; author carol; export STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")"; run 7; export STUB_AUTOFIX_RC=1; run 7 --ship
 check "fix ship failed: exits 1"                   rc_is 1
 
@@ -367,6 +371,68 @@ check "  and the holder's lock is left alone"      [ "$(readlink "$SB/locks/gith
 rm -f "$SB/locks/github.com_acme_widgets_pull_7"
 setup; run 7x
 check "junk is refused"                            rc_is 1
+
+echo "decide: re-freeze a different decision from the review already done"
+setup; run 7 --decide approve
+check "nothing reviewed: refused"                  rc_is 1
+check "  says why"                                 says "nothing reviewed"
+
+setup; export STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")"; run 7; run 7 --decide approve
+check "approve over request-changes: exits 0"      rc_is 0
+check "  says so"                                  said "DECISION=approve"
+check "  records it"                               decided "$INT" approve
+check "  keeps the reviewed SHA"                   [ "$(cat "$INT/decision/sha")" = "$REV" ]
+check "  the body is an approval"                  grep -q "confirmed no findings" "$INT/decision/body.md"
+check "  never re-runs the review"                 [ "$(calls intense-review.sh)" = 1 ]
+check "  posts nothing"                            [ "$(posts)" = 0 ]
+
+setup; run 7; run 7 --decide request-changes
+check "request-changes, nothing confirmed, no body: refused" rc_is 1
+check "  says why"                                 says "body"
+check "  the earlier decision stands"              decided "$INT" approve
+setup; run 7; printf 'Please add a test.\n' > "$C/b.md"; run 7 --decide request-changes --body-file "$C/b.md"
+check "request-changes with a body file: decided"  decided "$INT" request-changes
+check "  the body is that file"                    cmp -s "$C/b.md" "$INT/decision/body.md"
+
+setup; export STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")"; run 7; run 7 --decide fix
+check "fix for an author not on the list"          said "DECISION=fix"
+check "  prepares from the reviewed SHA"           logged autofix "MODE=prepare FROZEN=$INT/autofix REVIEWER= ARGS=7 $REV $ROOT $INT"
+check "  records it"                               decided "$INT" fix
+setup; export STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")"; run 7; export STUB_AUTOFIX_RC=1; run 7 --decide fix
+check "autofix refuses the override: exits 1"      rc_is 1
+check "  the earlier decision stands"              decided "$INT" request-changes
+check "  leaves no half-made fix"                  [ ! -e "$INT/autofix" ]
+setup; run 7; echo x > "$C/b.md"; run 7 --decide fix --body-file "$C/b.md"
+check "fix takes no body file"                     rc_is 1
+
+setup; author carol; export STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")"; run 7; run 7 --decide approve
+check "approve over fix: drops the frozen fix"     [ ! -e "$INT/autofix" ]
+check "  records it"                               decided "$INT" approve
+
+setup; run 7; run 7 --ship; echo x > "$C/b.md"; run 7 --decide request-changes --body-file "$C/b.md"
+check "after shipping: refused"                    rc_is 1
+check "  says why"                                 says "already"
+setup; run 7; run 7 --decide maybe
+check "an unknown decision: refused"               rc_is 1
+setup; run 7; run 7 --decide approve --no-cache
+check "--decide takes no review options"           rc_is 1
+setup; run 7; run 7 --decide approve --ship
+check "--decide and --ship together: refused"      rc_is 1
+setup; run 7; run 7 --decide
+check "--decide needs a value"                     rc_is 1
+
+echo "a running review is visible, and stops being so when it ends"
+setup
+cat > "$C/peek" <<'P'
+#!/usr/bin/env bash
+cat "$PR_REVIEW_INTENSE_DIR/$STUB_AUTHOR/widgets/$1/running" > "$STUB_LOG/marker" 2>/dev/null || true
+exec "$(dirname "$STUB_LOG")/../bin/intense-review.sh" "$@"
+P
+chmod +x "$C/peek"; PEER_REVIEW_INTENSE="$C/peek" run 7
+check "the store dir holds a pid while it runs"    grep -qE '^[0-9]+$' "$C/log/marker"
+check "  and not after"                            [ ! -e "$INT/running" ]
+setup; export STUB_ENGINE_RC=3; run 7
+check "a failed review leaves no marker"           [ ! -e "$INT/running" ]
 
 echo "the report wording this script keys on still exists"
 PRR="$HERE/../pr-review"
