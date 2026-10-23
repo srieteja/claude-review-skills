@@ -22,7 +22,7 @@ case "$1 $2" in
   "repo view") echo acme/widgets ;;
   "pr view")   printf '{"url":"https://github.com/acme/widgets/pull/7","author":{"login":"%s","is_bot":false},"headRefName":"feature-x","headRefOid":"%s","state":"OPEN","isCrossRepository":false}\n' \
                  "$STUB_AUTHOR" "$(cat "$STUB_LOG/live")" ;;
-  "pr list")   cat "$STUB_LOG/created" 2>/dev/null || true ;;
+  "pr list")   if [ -s "$STUB_LOG/created" ]; then printf '[{"url":"%s"}]\n' "$(cat "$STUB_LOG/created")"; else echo '[]'; fi ;;
   "pr create")
     [ "${STUB_CREATE_RC:-0}" = 0 ] || exit "$STUB_CREATE_RC"
     while [ $# -gt 0 ]; do
@@ -85,7 +85,7 @@ setup() {
   git -C "$C/repo" add -A; git -C "$C/repo" commit -qm init
   git clone -q --bare "$C/repo" "$C/remotes/acme/widgets.git"
   git -C "$C/repo" remote add origin "$C/remotes/acme/widgets.git"
-  SHA="$(git -C "$C/repo" rev-parse HEAD)"
+  SHA="$(git -C "$C/repo" rev-parse HEAD)"; FB="fix/pr7-review-findings-${SHA:0:12}"
   printf 'new\n' > "$C/repo/pkg/lib/a.dart"; git -C "$C/repo" diff > "$C/fix.patch"; git -C "$C/repo" checkout -q -- .
   printf '%s' "$confirmed" > "$C/merged.json"; echo "$SHA" > "$C/log/live"
   FROZEN="$C/store/alice/widgets/7/autofix"
@@ -101,10 +101,10 @@ said()   { grep -qxF -- "$1" "$C/stdout"; }
 logged() { [ -f "$C/log/$1" ] && grep -qF -- "$2" "$C/log/$1"; }
 never()  { ! logged "$@"; }
 calls()  { if [ -f "$C/log/$1" ]; then wc -l < "$C/log/$1" | tr -d ' '; else echo 0; fi; }
-pushed() { git --git-dir="$C/remotes/acme/widgets.git" rev-parse -q --verify refs/heads/fix/pr7-review-findings; }
+pushed() { git --git-dir="$C/remotes/acme/widgets.git" rev-parse -q --verify refs/heads/$FB; }
 unpushed() { ! pushed; }
-commit_msg() { git --git-dir="$C/remotes/acme/widgets.git" log -1 --format=%B fix/pr7-review-findings; }
-pushed_file_is() { [ "$(git --git-dir="$C/remotes/acme/widgets.git" show fix/pr7-review-findings:pkg/lib/a.dart)" = "$1" ]; }
+commit_msg() { git --git-dir="$C/remotes/acme/widgets.git" log -1 --format=%B $FB; }
+pushed_file_is() { [ "$(git --git-dir="$C/remotes/acme/widgets.git" show $FB:pkg/lib/a.dart)" = "$1" ]; }
 URL=https://github.com/acme/widgets/pull/99
 export REVIEW_URL=https://github.com/acme/widgets/pull/7#pullrequestreview-1
 
@@ -127,11 +127,11 @@ check "reports the opened PR"                      said "STATUS=opened:$URL"
 check "reports the author was asked"               said "REVIEWER=requested:alice"
 check "asks alice on the fix PR"                   logged gh "pr edit $URL --add-reviewer alice"
 check "pushes the fix onto alice's head"           pushed_file_is new
-check "  as one commit on top of it"               [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse fix/pr7-review-findings~1)" = "$SHA" ]
-check "  with no AI co-author"                     sh -c "! git --git-dir='$C/remotes/acme/widgets.git' log -1 --format=%B fix/pr7-review-findings | grep -qi co-authored"
+check "  as one commit on top of it"               [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse $FB~1)" = "$SHA" ]
+check "  with no AI co-author"                     sh -c "! git --git-dir='$C/remotes/acme/widgets.git' log -1 --format=%B $FB | grep -qi co-authored"
 check "  titled as the PR is"                      [ "$(commit_msg | head -n 1)" = "$(cat "$FROZEN/title")" ]
-check "  and naming no finding"                    sh -c "! git --git-dir='$C/remotes/acme/widgets.git' log -1 --format=%B fix/pr7-review-findings | grep -qF 'Old value'"
-check "opens against alice's branch"               logged gh "--base feature-x --head fix/pr7-review-findings"
+check "  and naming no finding"                    sh -c "! git --git-dir='$C/remotes/acme/widgets.git' log -1 --format=%B $FB | grep -qF 'Old value'"
+check "opens against alice's branch"               logged gh "--base feature-x --head $FB"
 check "posts the body as edited"                   grep -qF "EDITED BEFORE SHIPPING" "$C/log/body"
 check "review ran once, implementer ran once"      [ "$(calls intense):$(calls claude)" = 1:1 ]
 
@@ -144,12 +144,12 @@ echo "a ship cut short after the push"
 setup; run 7; export STUB_CREATE_RC=1; run 7 --ship
 check "pr create fails: exits 1"                   rc_is 1
 check "  the branch is already on origin"          pushed
-TIP="$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse fix/pr7-review-findings)"
+TIP="$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse $FB)"
 export STUB_CREATE_RC=0; rerun 7 --ship
 check "ship again: opens the PR"                   said "STATUS=opened:$URL"
-check "  on the branch already pushed"             [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse fix/pr7-review-findings)" = "$TIP" ]
+check "  on the branch already pushed"             [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse $FB)" = "$TIP" ]
 check "  and asks alice"                           said "REVIEWER=requested:alice"
-check "  one push, one PR"                         [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-list --count fix/pr7-review-findings)" = 2 ]
+check "  one push, one PR"                         [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-list --count $FB)" = 2 ]
 
 echo "refusals"
 setup; run 7; echo "moved000" > "$C/log/live"; run 7 --ship
@@ -168,7 +168,7 @@ check "  freezes no fix"                           [ ! -e "$FROZEN" ]
 run 7 --ship
 check "  ship approves"                            said "STATUS=approved:$REVIEW_URL"
 check "  pinned to the reviewed SHA"               logged gh "-f event=APPROVE -f commit_id=$SHA"
-check "  nothing pushed, no PR opened"             sh -c "! git --git-dir='$C/remotes/acme/widgets.git' rev-parse -q --verify refs/heads/fix/pr7-review-findings && ! grep -q '^pr create' '$C/log/gh'"
+check "  nothing pushed, no PR opened"             sh -c "! git --git-dir='$C/remotes/acme/widgets.git' rev-parse -q --verify refs/heads/$FB && ! grep -q '^pr create' '$C/log/gh'"
 
 setup; export PR_REVIEW_FIX_AUTHORS=bob; run 7; export PR_REVIEW_FIX_AUTHORS=alice
 check "CONFIRMED, author not on the fix list: request-changes" said "DECISION=request-changes"

@@ -19,6 +19,9 @@
 #   ship     re-apply the frozen patch (claude is not re-run), re-gate, push, open with the
 #            frozen title and body -- what a human approved is exactly what gets posted
 # AUTOFIX_REVIEWER=<login> requests that login's review on the PR once it's open.
+# AUTOFIX_ANALYZE_ONLY (space-separated globs on a package's dir, default `tests/*`) names
+# packages whose tests need a live rig: the gate runs `dart analyze` there, not `dart test`,
+# and the PR body says so. Empty tests every package.
 # AUTOFIX_MODEL (default claude-opus-5-5), AUTOFIX_EFFORT (default high) and AUTOFIX_BUDGET
 # (USD, default 8.00, `none` uncaps) pick the implementer's run; AUTOFIX_CLAUDE swaps its binary.
 #
@@ -50,6 +53,8 @@ DRY_RUN="${AUTOFIX_DRY_RUN:-0}"          # stop after the test gate; never push 
 MODE="${AUTOFIX_MODE:-}"
 FROZEN="${AUTOFIX_FROZEN:-}"
 REVIEWER="${AUTOFIX_REVIEWER:-}"
+# `-`, not `:-`: set-but-empty is the opt-out. read -a splits without globbing against $PWD.
+read -r -a ANALYZE_ONLY <<< "${AUTOFIX_ANALYZE_ONLY-tests/*}" || true
 PR="$1"; SHA="$2"; REPO_DIR="$3"; OUTDIR="$4"
 
 die()    { printf '\033[31mautofix: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -57,6 +62,12 @@ say()    { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
 warn()   { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
 status() { echo "STATUS=$*"; }
 lower()  { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+# analyze_only <package-dir> -- whether AUTOFIX_ANALYZE_ONLY names it
+analyze_only() {
+  local g
+  for g in ${ANALYZE_ONLY[@]+"${ANALYZE_ONLY[@]}"}; do case "$1" in $g) return 0 ;; esac; done
+  return 1
+}
 
 # request_review <fix-pr-url> <login> -- ask <login> to review the fix PR, and print exactly
 # one REVIEWER=requested|skipped|failed:<login> line. Must not fail the run: the PR is
@@ -133,13 +144,12 @@ STATE="$(printf '%s' "$LIVE" | jq -r '.state')"
   || die "#$PR comes from a fork -- its branch isn't in $REPO, so a fix PR can't sit on top of it"
 [ -n "$BASE_BRANCH" ] && [ "$BASE_BRANCH" != "null" ] || die "#$PR has no head branch"
 
-BRANCH="fix/pr${PR}-review-findings"
-
-# Idempotence: the branch name is keyed off the PR number, not the SHA, so a second tick
-# against a later push of the same PR still lands on the same fix branch -- one fix PR per
-# reviewed PR, not one per re-review, whichever path opened it. A closed or merged one
-# counts too; its URL is reported rather than silently skipped.
-EXISTING="$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json url -q '.[0].url // empty')" \
+# One fix branch per reviewed head, so one fix PR per review, whichever path opened it. Any
+# PR on it, in any state, ends the run: these same findings are already open, merged, or a
+# human's no. A fix PR for an earlier head, open or not, never blocks this one -- a valid
+# finding is a valid finding.
+BRANCH="fix/pr${PR}-review-findings-${SHA:0:12}"
+EXISTING="$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json url | jq -r '.[0].url // empty')" \
   || die "could not check for an existing fix PR on branch $BRANCH"
 if [ -n "$EXISTING" ]; then
   say "a fix PR already exists for #$PR: $EXISTING -- not opening another"
@@ -181,6 +191,8 @@ else
     echo "exact source -- do not re-litigate whether it's a bug, only how to fix it correctly"
     echo "and minimally. Stay inside this directory, leave .github/ alone, add or update a"
     echo "test where one would have caught it, and run \`dart test\` in each package you touch."
+    [ ${#ANALYZE_ONLY[@]} = 0 ] \
+      || echo "Packages matching ${ANALYZE_ONLY[*]} need a live environment that isn't here: run \`dart analyze\` there instead."
     echo "Do not commit; your working-tree changes are the result."
     echo
     jq -r '.[] | select(.v.verdict == "CONFIRMED") |
@@ -258,13 +270,20 @@ done < <(git -C "$TREE" diff --cached --name-only --no-renames -z)
 [ "$CHANGED" = 1 ] || { warn "the patch changes nothing -- no PR"; exit 1; }
 [ -n "$PACKAGES" ] || say "no Dart package touched -- nothing to test"
 
-i=0
+# A live-rig pack is test-only code, so analysis bounds what its patch can break; the PR's
+# own CI runs it for real. The body names each one -- a weaker gate is never a silent one.
+i=0; ANALYZED=""
 while IFS= read -r pkg; do
   i=$((i + 1)); LOG="$WORK/gate.$i.log"
-  say "testing $pkg"
+  if analyze_only "$pkg"; then
+    say "analyzing $pkg -- its tests need a live rig"; GATE=(analyze --fatal-infos)
+    ANALYZED="$ANALYZED${ANALYZED:+, }\`$pkg\`"
+  else
+    say "testing $pkg"; GATE=(test)
+  fi
   # </dev/null: the loop's stdin is the package list, and a test that read it would skip the rest.
-  ( cd "$TREE/$pkg" && dart pub get && dart test ) </dev/null >"$LOG" 2>&1 \
-    || { warn "tests failed in $pkg -- no PR (see $LOG)"; exit 1; }
+  ( cd "$TREE/$pkg" && dart pub get && dart "${GATE[@]}" ) </dev/null >"$LOG" 2>&1 \
+    || { warn "dart ${GATE[0]} failed in $pkg -- no PR (see $LOG)"; exit 1; }
 done < <(printf '%s' "$PACKAGES" | LC_ALL=C sort -u)
 
 # The PR's public text: a short line of context, then one bolded paragraph per finding that
@@ -278,6 +297,7 @@ else
     echo "Fixes for what an adversarial review of #$PR confirmed at \`${SHA:0:12}\`, as one commit on top of \`$BASE_BRANCH\`."
     # Shared with peer-review.sh's change request; confirmed.jq says why the @s are quieted.
     jq -L "$HERE" -r 'include "confirmed"; confirmed_md' "$OUTDIR/merged.json"
+    [ -z "$ANALYZED" ] || printf '\n%s gated by `dart analyze` only: its tests need a live environment, so CI runs them.\n' "$ANALYZED"
   } > "$BODY"
 fi
 
@@ -304,8 +324,8 @@ git -C "$TREE" -c user.name="$(git -C "$ROOT" config user.name)" \
 
 # Never forced. A fix branch already on origin is resumed only when it is this fix exactly --
 # one commit on $SHA with this tree, as a run whose `pr create` failed leaves it. Anything
-# else on that branch is someone's work or an older fix: left for you to look at. Both talk
-# to $ORIGIN, the push URL the guard checked, so the branch is looked for where it would go.
+# else on that branch is someone's work: left for you to look at. Both talk to $ORIGIN, the
+# push URL the guard checked, so the branch is looked for where it would go.
 if git -C "$TREE" fetch -q "$ORIGIN" "refs/heads/$BRANCH" 2>/dev/null; then
   [ "$(git -C "$TREE" rev-parse 'FETCH_HEAD^{tree}')" = "$(git -C "$TREE" rev-parse 'HEAD^{tree}')" ] \
     && [ "$(git -C "$TREE" rev-parse -q --verify 'FETCH_HEAD~1')" = "$SHA" ] \

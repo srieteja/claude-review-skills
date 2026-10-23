@@ -59,10 +59,16 @@ echo "$*" >> "$STUB_LOG/dart"
 # pub get leaves what the real one does: a lockfile and .dart_tool/, neither part of the fix.
 if [ "$1 $2" = "pub get" ]; then : > pubspec.lock; mkdir -p .dart_tool; fi
 if [ "$1" = test ]; then pwd >> "$STUB_LOG/dart.cwd"; [ -z "${STUB_DART_STDIN:-}" ] || cat >/dev/null; exit "${STUB_DART_RC:-0}"; fi
+if [ "$1" = analyze ]; then pwd >> "$STUB_LOG/analyze.cwd"; exit "${STUB_ANALYZE_RC:-0}"; fi
 STUB
 chmod +x "$SB/bin/"*
 export PATH="$SB/bin:$PATH" REVIEW_SKILLS_CONFIG="$SB/no-config"
 
+prlist() {  # prlist <number>:<state>... -- gh pr list --json url,state, in that order
+  local out="" p
+  for p in "$@"; do out="$out${out:+,}{\"url\":\"https://github.com/acme/widgets/pull/${p%%:*}\",\"state\":\"${p#*:}\"}"; done
+  echo "[$out]"
+}
 prview() {  # prview <isCrossRepository> <headRefOid> [state]
   printf '{"headRefName":"feature-x","headRefOid":"%s","state":"%s","isCrossRepository":%s}' "$2" "${3:-OPEN}" "$1"
 }
@@ -70,7 +76,7 @@ prview() {  # prview <isCrossRepository> <headRefOid> [state]
 # A fresh case: a one-package Dart repo at $SHA, its bare origin at remotes/acme/widgets.git,
 # a review store with one CONFIRMED and one UNVERIFIABLE finding, and every stub knob reset.
 # Flags add to it: `workspace` a root pubspec.yaml, as a pub workspace has; `twopkg` a second
-# package, pkg2; `ci` a workflow under .github/.
+# package, pkg2; `ci` a workflow under .github/; `live` tests/live, a pack that needs a live rig.
 setup() {
   n=$((n + 1)); C="$SB/case$n"
   mkdir -p "$C/remotes/acme" "$C/out" "$C/log" "$C/repo/pkg/lib"
@@ -81,12 +87,14 @@ setup() {
   case " $* " in *" workspace "*) printf 'name: root\nworkspace: [pkg]\n' > "$C/repo/pubspec.yaml" ;; esac
   case " $* " in *" twopkg "*) mkdir -p "$C/repo/pkg2/test"; printf 'name: pkg2\n' > "$C/repo/pkg2/pubspec.yaml"
                                printf 'void main() {}\n' > "$C/repo/pkg2/test/a_test.dart" ;; esac
+  case " $* " in *" live "*) mkdir -p "$C/repo/tests/live/test"; printf 'name: live\n' > "$C/repo/tests/live/pubspec.yaml"
+                             printf 'void main() {}\n' > "$C/repo/tests/live/test/a_test.dart" ;; esac
   case " $* " in *" ci "*) mkdir -p "$C/repo/.github/workflows"; printf 'on: push\n' > "$C/repo/.github/workflows/ci.yaml" ;; esac
   printf 'old\n' > "$C/repo/pkg/lib/a.dart"
   git -C "$C/repo" add -A; git -C "$C/repo" commit -qm init
   git clone -q --bare "$C/repo" "$C/remotes/acme/widgets.git"
   git -C "$C/repo" remote add origin "$C/remotes/acme/widgets.git"
-  SHA="$(git -C "$C/repo" rev-parse HEAD)"
+  SHA="$(git -C "$C/repo" rev-parse HEAD)"; FB="fix/pr7-review-findings-${SHA:0:12}"
   printf 'new\n' > "$C/repo/pkg/lib/a.dart"
   git -C "$C/repo" diff > "$C/fix.patch"; git -C "$C/repo" checkout -q -- .
   cat > "$C/out/merged.json" <<'JSON'
@@ -98,9 +106,9 @@ JSON
   printf '{"url":"https://github.com/acme/widgets/pull/7","headRefOid":"%s"}' "$SHA" > "$C/out/meta.json"
   FROZEN="$C/out/autofix"
   export STUB_LOG="$C/log" STUB_PATCH="$C/fix.patch" STUB_REPO=acme/widgets STUB_EXISTING="" \
-         STUB_ME=me STUB_EDIT_RC=0 STUB_DART_RC=0 STUB_CLAUDE_RC=0 STUB_CREATE_RC=0 STUB_DART_STDIN="" \
+         STUB_ME=me STUB_EDIT_RC=0 STUB_DART_RC=0 STUB_ANALYZE_RC=0 STUB_CLAUDE_RC=0 STUB_CREATE_RC=0 STUB_DART_STDIN="" \
          STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success
-  unset AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE
+  unset AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE AUTOFIX_ANALYZE_ONLY
   REFS_BEFORE="$(refs)"
 }
 # patch [--no-fix] <file>... -- the implementer's patch adds each <file>, alongside the a.dart
@@ -122,7 +130,7 @@ patch_mv() {
 occupy_fix_branch() {
   git -C "$C/repo" checkout -q -b other
   for c in "${@:-theirs}"; do echo "$c" > "$C/repo/pkg/lib/a.dart"; git -C "$C/repo" commit -qam "$c"; done
-  git -C "$C/repo" push -q origin other:refs/heads/fix/pr7-review-findings
+  git -C "$C/repo" push -q origin other:refs/heads/$FB
   git -C "$C/repo" checkout -q main; git -C "$C/repo" branch -qD other
 }
 run() {  # run [sha] -- autofix.sh for PR #7 against this case; sets rc, captures stdout/stderr
@@ -137,16 +145,16 @@ said()    { grep -qxF -- "$1" "$C/stdout"; }                 # an exact STATUS=/
 logged()  { [ -f "$C/log/$1" ] && grep -qF -- "$2" "$C/log/$1"; }
 never()   { ! logged "$@"; }
 calls()   { if [ -f "$C/log/$1" ]; then wc -l < "$C/log/$1" | tr -d ' '; else echo 0; fi; }
-pushed()  { git --git-dir="$C/remotes/acme/widgets.git" rev-parse -q --verify refs/heads/fix/pr7-review-findings; }
+pushed()  { git --git-dir="$C/remotes/acme/widgets.git" rev-parse -q --verify refs/heads/$FB; }
 unpushed() { ! pushed; }
 no_headings() { ! grep -q '^#' "$C/log/body"; }
-pushed_file_is() { [ "$(git --git-dir="$C/remotes/acme/widgets.git" show fix/pr7-review-findings:pkg/lib/a.dart)" = "$1" ]; }
-pushed_has()   { git --git-dir="$C/remotes/acme/widgets.git" cat-file -e "fix/pr7-review-findings:$1"; }
-remote_tip()   { git --git-dir="$C/remotes/acme/widgets.git" rev-parse fix/pr7-review-findings; }
-commit_msg()   { git --git-dir="$C/remotes/acme/widgets.git" log -1 --format=%B fix/pr7-review-findings; }
+pushed_file_is() { [ "$(git --git-dir="$C/remotes/acme/widgets.git" show $FB:pkg/lib/a.dart)" = "$1" ]; }
+pushed_has()   { git --git-dir="$C/remotes/acme/widgets.git" cat-file -e "$FB:$1"; }
+remote_tip()   { git --git-dir="$C/remotes/acme/widgets.git" rev-parse $FB; }
+commit_msg()   { git --git-dir="$C/remotes/acme/widgets.git" log -1 --format=%B $FB; }
 subject_is()   { [ "$(commit_msg | head -n 1)" = "$1" ]; }
 commit_lacks() { ! commit_msg | grep -qiF -- "$1"; }
-no_local_branch() { ! git -C "$C/repo" rev-parse -q --verify refs/heads/fix/pr7-review-findings; }
+no_local_branch() { ! git -C "$C/repo" rev-parse -q --verify refs/heads/$FB; }
 # arg <flag> -- the value claude was given for <flag>
 arg()     { grep -A1 -xF -- "$1" "$C/log/claude.args" | sed -n 2p; }
 has_arg() { grep -qxF -- "$1" "$C/log/claude.args"; }
@@ -155,7 +163,7 @@ refs_untouched() { [ "$(refs)" = "$REFS_BEFORE" ]; }
 impl_gone() { [ ! -e "$(cat "$C/log/claude.cwd")" ]; }
 ran_in_own_tree() { case "$(cat "$C/log/claude.cwd")" in "$C/repo"|"$C/repo"/*) return 1 ;; esac; }
 only_tested_in() { [ -s "$C/log/dart.cwd" ] && ! grep -qv -- "$1\$" "$C/log/dart.cwd"; }
-pushed_lacks() { ! git --git-dir="$C/remotes/acme/widgets.git" cat-file -e "fix/pr7-review-findings:$1"; }
+pushed_lacks() { ! git --git-dir="$C/remotes/acme/widgets.git" cat-file -e "$FB:$1"; }
 URL=https://github.com/acme/widgets/pull/99
 
 echo "default path (what watch.sh runs)"
@@ -165,7 +173,7 @@ check "reports the opened PR"                  said "STATUS=opened:$URL"
 check "implements via claude once"                [ "$(calls claude)" = 1 ]
 check "pushes the fix branch"                  pushed
 check "pushed tree carries the fix"            pushed_file_is new
-check "opens against the reviewed head branch" logged gh "--base feature-x --head fix/pr7-review-findings"
+check "opens against the reviewed head branch" logged gh "--base feature-x --head $FB"
 check "no reviewer request without AUTOFIX_REVIEWER" never gh "pr edit"
 check "freezes nothing"                        [ ! -e "$FROZEN" ]
 check "task carries the CONFIRMED finding"     logged task.md "Old value leaks past the reset"
@@ -261,11 +269,27 @@ check "no CONFIRMED finding: exits 0"          rc_is 0
 check "  reports none"                         said "STATUS=none"
 check "  never calls claude"                      [ "$(calls claude)" = 0 ]
 
-setup; export STUB_EXISTING="https://github.com/acme/widgets/pull/50"; run
-check "fix PR exists: exits 0"                 rc_is 0
+setup; export STUB_EXISTING="$(prlist 50:OPEN)"; run
+check "fix PR open: exits 0"                   rc_is 0
 check "  reports its URL"                      said "STATUS=exists:https://github.com/acme/widgets/pull/50"
 check "  never calls claude"                      [ "$(calls claude)" = 0 ]
 check "  never pushes"                         unpushed
+
+setup; export STUB_EXISTING="$(prlist 50:CLOSED)"; run
+check "fix PR closed unmerged: exists, a human said no" said "STATUS=exists:https://github.com/acme/widgets/pull/50"
+check "  never calls claude"                   [ "$(calls claude)" = 0 ]
+
+setup; export STUB_EXISTING="$(prlist 50:MERGED)"; run
+check "fix PR for this head merged: exists"    said "STATUS=exists:https://github.com/acme/widgets/pull/50"
+
+echo "fix PRs for earlier heads"
+setup; run
+check "looks only at this head's fix branch"   logged gh "--head fix/pr7-review-findings-${SHA:0:12} "
+
+setup; git -C "$C/repo" push -q origin "$SHA:refs/heads/fix/pr7-review-findings-0123456789ab"; run
+check "an earlier head's fix branch on origin: opens another" said "STATUS=opened:$URL"
+check "  on this head's branch"                pushed_file_is new
+check "  leaving the earlier one alone"        [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse fix/pr7-review-findings-0123456789ab)" = "$SHA" ]
 
 echo "guards"
 setup; export STUB_PRVIEW="$(prview true "$SHA")"; run
@@ -288,7 +312,7 @@ setup; git clone -q --bare "$C/repo" "$C/remotes/acme/elsewhere.git"
 git -C "$C/repo" remote set-url --push origin "$C/remotes/acme/elsewhere.git"; run
 check "origin pushes to another repo: refused" rc_is 1
 check "  before claude"                           [ "$(calls claude)" = 0 ]
-check "  nothing pushed there"                 sh -c "! git --git-dir='$C/remotes/acme/elsewhere.git' rev-parse -q --verify fix/pr7-review-findings"
+check "  nothing pushed there"                 sh -c "! git --git-dir='$C/remotes/acme/elsewhere.git' rev-parse -q --verify $FB"
 
 setup; mkdir -p "$SB/nodart"; for b in gh claude; do ln -sf "$SB/bin/$b" "$SB/nodart/$b"; done
 SAVED_PATH="$PATH"; PATH="$SB/nodart:/usr/bin:/bin"; run; PATH="$SAVED_PATH"
@@ -357,6 +381,37 @@ check "  never pushes"                         unpushed
 setup twopkg; patch pkg2/lib/b.dart; export STUB_DART_STDIN=1; run
 check "a test that reads stdin: every package still gated" [ "$(grep -c '^test' "$C/log/dart")" = 2 ]
 
+echo "live-rig packs"
+setup live; patch --no-fix tests/live/test/b_test.dart; run
+check "a patch in tests/: opened"              said "STATUS=opened:$URL"
+check "  analyzed there"                       grep -qF /tests/live "$C/log/analyze.cwd"
+check "  at --fatal-infos"                     logged dart "analyze --fatal-infos"
+check "  never tested there"                   never dart test
+check "  the body names it"                    logged body '`tests/live`'
+
+setup live; patch tests/live/test/b_test.dart; run
+check "a fix beside a tests/ change: package tested" only_tested_in /pkg
+check "  the pack analyzed"                    [ "$(grep -c . "$C/log/analyze.cwd")" = 1 ]
+
+setup live; patch --no-fix tests/live/test/b_test.dart; export STUB_ANALYZE_RC=1; run
+check "analyze fails in tests/: exits 1"       rc_is 1
+check "  never pushes"                         unpushed
+check "  never opens a PR"                     never gh "pr create"
+
+setup live; patch --no-fix tests/live/test/b_test.dart; export AUTOFIX_ANALYZE_ONLY=""; run
+check "AUTOFIX_ANALYZE_ONLY empty: tests/ is tested" only_tested_in /tests/live
+check "  never only analyzed"                  [ ! -e "$C/log/analyze.cwd" ]
+check "  body claims no analyze-only gate"     never body "analyze"
+
+setup live twopkg; patch --no-fix pkg2/lib/b.dart; export AUTOFIX_ANALYZE_ONLY="pkg2 nomatch/*"; run
+check "AUTOFIX_ANALYZE_ONLY names its own packages" grep -qF /pkg2 "$C/log/analyze.cwd"
+check "  never tested there"                   never dart test
+
+setup; run
+check "prompt names the analyze-only packages" logged task.md "tests/*"
+setup; export AUTOFIX_ANALYZE_ONLY=""; run
+check "  and none when it's empty"             never task.md "dart analyze"
+
 echo "prepare"
 setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
 check "exits 0"                                rc_is 0
@@ -407,7 +462,7 @@ check "  reports stale"                        said "STATUS=stale"
 check "  never pushes"                         unpushed
 
 setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
-export AUTOFIX_MODE=ship STUB_EXISTING="https://github.com/acme/widgets/pull/51"; run
+export AUTOFIX_MODE=ship STUB_EXISTING="$(prlist 51:OPEN)"; run
 check "fix PR appeared since prepare: not opened again" said "STATUS=exists:https://github.com/acme/widgets/pull/51"
 check "  never pushes"                         unpushed
 
@@ -439,7 +494,7 @@ check "  says to ship again"                   grep -qF "ship again" "$C/stderr"
 TIP="$(remote_tip)"; export STUB_CREATE_RC=0; rerun
 check "ship again: opens the PR"               said "STATUS=opened:$URL"
 check "  on the branch already pushed"         [ "$(remote_tip)" = "$TIP" ]
-check "  still one commit on the reviewed head" [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse fix/pr7-review-findings~1)" = "$SHA" ]
+check "  still one commit on the reviewed head" [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse $FB~1)" = "$SHA" ]
 
 setup; git clone -q --bare "$C/repo" "$C/mirror.git"
 git -C "$C/repo" remote set-url origin "$C/mirror.git"
@@ -452,11 +507,11 @@ check "  on the branch already pushed"         [ "$(remote_tip)" = "$TIP" ]
 
 setup; export STUB_CREATE_RC=1; run
 check "pr create fails on the default path: exits 1" rc_is 1
-check "  says how to clear the branch, since a re-run re-implements" grep -qF -- "--delete fix/pr7-review-findings" "$C/stderr"
+check "  says how to clear the branch, since a re-run re-implements" grep -qF -- "--delete $FB" "$C/stderr"
 
 setup; occupy_fix_branch; TIP="$(remote_tip)"; run
 check "fix branch on origin holds other work: refused" rc_is 1
-check "  says how to clear it"                 grep -qF -- "--delete fix/pr7-review-findings" "$C/stderr"
+check "  says how to clear it"                 grep -qF -- "--delete $FB" "$C/stderr"
 check "  never overwrites it"                  [ "$(remote_tip)" = "$TIP" ]
 check "  never opens a PR"                     never gh "pr create"
 
@@ -496,7 +551,7 @@ setup; export AUTOFIX_REVIEWER=app/dependabot; run
 check "author is a bot: skipped"               never gh "pr edit"
 check "  reports it"                           said "REVIEWER=skipped:app/dependabot"
 
-setup; export AUTOFIX_REVIEWER=alice STUB_EXISTING="https://github.com/acme/widgets/pull/50"; run
+setup; export AUTOFIX_REVIEWER=alice STUB_EXISTING="$(prlist 50:OPEN)"; run
 check "no PR opened: no request"               never gh "pr edit"
 
 [ "$fail" = 0 ] && echo "all passed" || { echo "FAILURES"; exit 1; }

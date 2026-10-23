@@ -208,9 +208,9 @@ further than a report: a companion PR with the fix, against that author's own br
    - `origin`'s push URL isn't the PR's repo. The PR can't see a branch pushed to a personal fork.
    - The PR comes from a fork. A PR from `contributor:main` would otherwise get a fix PR against this repo's `main`.
    - The PR is no longer open.
-3. A fix PR already exists for this PR number (branch `fix/pr<N>-review-findings`, any state, including closed or merged) -> `STATUS=exists:<url>`, exit clean.
-   - The branch name is keyed off the PR number, not the SHA.
-   - So a re-review after a new push still lands on the same branch instead of opening a second PR.
+3. A fix PR already exists for this reviewed head (branch `fix/pr<N>-review-findings-<sha12>`, any state) -> `STATUS=exists:<url>`, exit clean.
+   - Open, merged or closed, it is these same findings: already proposed, already taken, or a human's no.
+   - A fix PR for an earlier head never blocks, open or not. A re-review after a new push that confirms findings opens its own fix PR.
 4. **The PR head moved since the review -> `STATUS=stale`, exit 1, in every mode.** The findings describe code the PR no longer is, and after a rebase a fix on the old head would bring the commits the author dropped back into their branch. `watch.sh` marks the reviewed head seen (ledger `stale`), so its next tick reviews the new one.
    - Only then: `dart` not on `PATH` -> exit 1, no STATUS. The gate can't run, so the implementer isn't paid for.
 5. **`claude -p` implements every confirmed finding as one task**, in a throwaway `--shared` clone at the reviewed SHA. Only a patch comes back, and this script re-applies it itself.
@@ -225,10 +225,11 @@ further than a report: a companion PR with the fix, against that author's own br
    - Anything under `.github/` is refused outright. No test run vouches for a CI change.
    - A rename counts as both its paths. The package a file leaves is gated too, and a workflow can't leave `.github/` under its new name.
    - Each touched package with `test/` gets `dart pub get && dart test`, logged to its own file. A docs-only patch gates nothing and says so.
+   - Except a package matching `AUTOFIX_ANALYZE_ONLY` (space-separated globs on its dir, default `tests/*`): its tests need a live rig, so it gets `dart pub get && dart analyze --fatal-infos`. The PR body names each such package, and the implementer's prompt says not to run its tests. Set it empty to `dart test` every package.
    - Any failure, or a patch that doesn't apply cleanly, stops here with no PR.
 7. **On a clean gate, it commits exactly the staged patch** (none of `pub get`'s debris) on a detached HEAD, so no `fix/…` branch appears in your clone.
    - The commit message is the PR title, then `Reviewed at <sha12>; the PR description carries each finding.` No finding text goes into history.
-   - It pushes `fix/pr<N>-review-findings` to origin's push URL, never forced and with no tags, and opens a PR against the reviewed PR's own head branch.
+   - It pushes `fix/pr<N>-review-findings-<sha12>` to origin's push URL, never forced and with no tags, and opens a PR against the reviewed PR's own head branch.
    - The body is one line of context, then one paragraph per finding: **the claim** (`file:line`) — mechanism.
    - The body has no headings and no footer. The review report is local-only, so the body carries the reasoning.
    - An `@` that starts a word in the finding text gets a word joiner (U+2060) after it, so `@override` or `@org/team` pings no one. An `@` after `_` counts, since `_@x_` renders as emphasis around a live mention. Email addresses are left alone. GitHub's own renderer (`gh api markdown`) links none of these.

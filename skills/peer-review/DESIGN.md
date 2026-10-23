@@ -73,7 +73,7 @@ sequenceDiagram
 - **The test gate is Dart-only.** Non-Dart patches are refused, not gated.
 - **Prepare runs untrusted code locally.** `claude -p` runs unattended with accept-edits and `dart test` as a tool, so model-written code runs before the gate does, and the gate's `dart test` executes the patch and the PR's own tests, all before a human reads anything. Sandboxing both is its own project.
 - **A same-repo push runs CI with the repo's secrets.** The `.github/` refusal stops the patch from changing workflows, but not from changing what an existing workflow runs.
-- **`gh pr list --head` matches by branch name across forks.** A fork with a `fix/prN-review-findings` branch reads as `exists`. That fails safe: nothing is opened.
+- **`gh pr list --head` matches by branch name across forks.** A fork with a `fix/prN-review-findings-<sha12>` branch for the same head reads as `exists`. That fails safe: nothing is opened.
 
 ## Tests
 
