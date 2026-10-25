@@ -8,20 +8,33 @@ before anything is posted:
   inline   line falls inside a hunk    -> a comment anchored exactly there
   nearest  file is in the diff, line is within CLAMP_LIMIT of a hunk
                                        -> anchored to the closest in-hunk line, with
-                                          the true location stated in the body
+                                          the true location stated in the comment
   body     file is not in the diff, the nearest hunk is further than CLAMP_LIMIT,
            or the claim was never checked (ERROR)
-                                       -> the review's top-level body, never inline
+                                       -> in full in the review's top-level body
 
 An anchor far from the defect points the reader at unrelated code even when the body
 says so, which is why the clamp has a limit rather than always taking the nearest line.
 
-usage: inline.py --merged merged.json --meta meta.json --repo owner/name [--out payload.json]
-"""
-import argparse, json, re, subprocess, sys
+The text is confirmed.jq's: its groups (one defect two finders reported is one comment)
+and its review_body, so the body here and a hand-built one never drift. A comment is the
+claim and the repro, quieted; the mechanism and evidence stay in the local report.
 
+Each comment carries "marker", its finding's `file:line` as the body names it. It is not a
+GitHub field: whoever posts deletes it, and peer-review's ship first drops each comment
+whose marker the (edited) body no longer holds.
+
+An event other than COMMENT posts only CONFIRMED findings: a change request or an approval
+never carries a claim no one could verify.
+
+usage: inline.py --merged merged.json --meta meta.json [--repo owner/name]
+                 [--event COMMENT|REQUEST_CHANGES] [--out payload.json]
+       --repo defaults to the one in meta.json's url.
+"""
+import argparse, json, os, re, subprocess, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 HUNK = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@')
-ICON = {"high": "🔴", "medium": "🟠", "low": "🟡"}
 CLAMP_LIMIT = 20   # lines; beyond this a "nearest" anchor is noise, not a hint
 
 
@@ -59,79 +72,68 @@ def anchor(spans, line):
     return (best, False) if abs(best - line) <= CLAMP_LIMIT else (None, False)
 
 
-def body_for(f, kind, true_line):
-    v = f["v"]
-    head = f'**{ICON.get(f["severity"], "⚪")} {f["severity"]} · {f["id"]} — {f["claim"]}**'
-    parts = [head, ""]
-    if kind == "nearest":
-        parts += [f'> Anchored here because it is the nearest line in the diff. '
-                  f'The defect is at `{f["file"]}:{true_line}`.', ""]
-    parts += [f'**Mechanism.** {f["mechanism"]}', "",
-              f'**Repro.** {f["repro"]}', "",
-              f'**Independent check ({v["verdict"]}).** {v["reason"]}']
-    if v.get("correction"):
-        parts += ["", f'**Correction.** {v["correction"]}']
-    if v.get("evidence"):
-        parts += ["", "<details><summary>evidence</summary>", "",
-                  "```", v["evidence"].rstrip(), "```", "", "</details>"]
-    return "\n".join(parts)
+def jq(findings, program, *args):
+    """Run a confirmed.jq program over findings; its raw output."""
+    return subprocess.run(["jq", "-L", HERE, "-r", *args, f'include "confirmed"; {program}'],
+                          input=json.dumps(findings), capture_output=True, text=True,
+                          check=True).stdout
+
+
+def comment_bodies(groups):
+    """One comment body per group, rendered by confirmed.jq's helpers."""
+    return json.loads(jq(groups, 'map(.[0] as $p | "**\\($p | icon) \\($p | sev)'
+                                 '\\(unconfirmed) — \\($p.claim | quiet)**"'
+                                 ' + (if ($p.repro // "") != "" then "\\n\\n\\($p.repro | quiet)" else "" end)'
+                                 ' + (also_at | if length > 0 then "\\n\\nAlso reported at \\(join(", "))." else "" end))',
+                         "-c"))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--merged", required=True)
     ap.add_argument("--meta", required=True)
-    ap.add_argument("--repo", required=True)
+    ap.add_argument("--repo")
+    ap.add_argument("--event", default="COMMENT", choices=["COMMENT", "REQUEST_CHANGES"])
     ap.add_argument("--out")
     a = ap.parse_args()
 
     findings = json.load(open(a.merged))
     meta = json.load(open(a.meta))
     pr, sha = meta["number"], meta["headRefOid"]
-    spans = right_side_ranges(a.repo, pr)
+    repo = a.repo or re.search(r"github\.com/([^/]+/[^/]+)/pull/", meta["url"]).group(1)
+    if a.event != "COMMENT":
+        findings = [f for f in findings if f["v"]["verdict"] == "CONFIRMED"]
+    spans = right_side_ranges(repo, pr)
 
-    comments, deferred, dropped = [], [], []
-    for f in findings:
-        verdict = f["v"]["verdict"]
-        if verdict == "REFUTED":
-            dropped.append(f)
-            continue
+    groups = json.loads(jq(findings, "groups", "-c"))
+    bodies = comment_bodies(groups)
+    comments, full = [], []
+    for g, body in zip(groups, bodies):
+        f = g[0]
         # An ERROR verdict is an unchecked claim. It never goes inline on someone
-        # else's PR; it is named in the body so the gap stays visible.
-        if verdict == "ERROR" or f["file"] not in spans:
-            deferred.append((f, "unchecked" if verdict == "ERROR" else "off-diff"))
-            continue
-        line, exact = anchor(spans[f["file"]], f["line"])
+        # else's PR; it goes in the body so the gap stays visible.
+        line = None
+        if f["v"]["verdict"] != "ERROR" and f["file"] in spans:
+            line, exact = anchor(spans[f["file"]], f["line"])
         if line is None:
-            deferred.append((f, "off-diff"))
+            full.append(f["id"])
             continue
+        marker = f'`{f["file"]}:{f["line"]}`'
+        if not exact:
+            body += (f'\n\n> Anchored here because it is the nearest line in the diff. '
+                     f'The defect is at {marker}.')
         comments.append({"path": f["file"], "line": line, "side": "RIGHT",
-                         "body": body_for(f, "inline" if exact else "nearest", f["line"])})
+                         "body": body, "marker": marker})
 
-    n_conf = sum(1 for f in findings if f["v"]["verdict"] == "CONFIRMED")
-    body = [f'## Adversarial review of `{sha[:8]}`', "",
-            f'{len(findings)} finding(s) raised; {n_conf} survived independent refutation. '
-            f'{len(comments)} anchored inline below.', ""]
-    if deferred:
-        body += ["Not anchorable to a diff line:", ""]
-        for f, why in deferred:
-            note = "**never checked — no verdict was produced**" if why == "unchecked" \
-                   else f'`{f["file"]}:{f["line"]}` is not on a line this PR changed'
-            body += [f'- **{f["id"]}** ({f["severity"]}, {f["v"]["verdict"]}) — {f["claim"]} — {note}']
-        body += [""]
-    if dropped:
-        body += [f'<sub>{len(dropped)} further finding(s) were refuted against the source '
-                 f'at this commit and are not reported.</sub>']
-
-    payload = {"commit_id": sha, "event": "COMMENT",
-               "body": "\n".join(body).rstrip(), "comments": comments}
-    text = json.dumps(payload, indent=2)
+    text = jq(findings, "review_body($sha; $event; $full)", "--arg", "sha", sha,
+              "--arg", "event", a.event, "--argjson", "full", json.dumps(full))
+    payload = {"commit_id": sha, "event": a.event, "body": text.rstrip(), "comments": comments}
+    out = json.dumps(payload, indent=2, ensure_ascii=False)
     if a.out:
-        open(a.out, "w").write(text + "\n")
-        print(f"{len(comments)} inline · {len(deferred)} in body · {len(dropped)} refuted -> {a.out}",
-              file=sys.stderr)
+        open(a.out, "w").write(out + "\n")
+        print(f"{len(comments)} inline · {len(full)} in body -> {a.out}", file=sys.stderr)
     else:
-        print(text)
+        print(out)
 
 
 if __name__ == "__main__":

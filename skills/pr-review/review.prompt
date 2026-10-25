@@ -16,6 +16,10 @@ Report defects that change behaviour for a user or caller:
   - security-relevant mistakes: key material, auth, permissions, injection
   - a public API contract broken without a migration path
 
+A defect that was there before this PR counts too, when the code the diff touches reaches it.
+Report it like any other and cite the line where it lives; a later step decides whether it is
+fixed on this PR's branch or on trunk.
+
 Do NOT report: style, naming, formatting, missing comments, test coverage as such (unless
 your slice section above puts it in scope), or
 speculative "this could be refactored" observations. If you cannot state who is harmed and
@@ -44,7 +48,8 @@ __EMIT_TARGET__
    "file":"packages/at_auth/lib/src/keys/serialization/assurance.dart",
    "line":22,
    "severity":"high|medium|low",
-   "claim":"one sentence: what breaks",
+   "title":"at most 12 words: what breaks, no call chain",
+   "claim":"at most 30 words: what breaks; who calls it and when goes in mechanism",
    "mechanism":"the path from entry point to wrong outcome, naming the functions and lines you traced",
    "repro":"concrete inputs or state -> the wrong result"}
  ],

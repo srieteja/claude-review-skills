@@ -13,6 +13,10 @@ list. Name the mechanism — what was wrong before, what the change makes true i
 
 A Mermaid diagram of the part of the system the change touches: the call path, the state
 machine, or the data flow, whichever the diff is actually about. Fence it as ```mermaid.
+Name nodes after the files, classes and functions in the diff, spelled as the diff spells them.
+Put every label holding anything but letters, digits, underscores and spaces in double quotes,
+subgraph titles included: `A["serveHttpOn()"]`, `subgraph env["Envelope §9.4"]`. An unquoted
+`§`, `(`, `:` or `/` breaks the parse.
 Keep it to the nodes the diff touches plus their immediate neighbours — a diagram of the whole
 subsystem explains nothing. If the change is a single local edit with no shape worth drawing,
 skip the diagram and say so in one line.

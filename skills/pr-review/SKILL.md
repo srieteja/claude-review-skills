@@ -192,12 +192,14 @@ space- or comma-separated, case-insensitive, empty for none), a confirmed findin
 further than a report: a companion PR with the fix, against that author's own branch.
 
 - **`/pr-review` and `/intense-review`: stage 5, automatic.** After the report (and stage 4,
-  if `--post`), `autofix.sh` runs one-shot on the head the review read: implement, gate,
-  push, open, and request the author's review. `--no-fix` skips it; so does `--sha`, which
-  reviews a pinned commit rather than the head.
-  - `STATUS=opened:<url>` or `exists:<url>` -> exit 0.
-  - **Anything else -> exit 4** with a `NO fix PR` warning: the head moved (`stale`), a
-    guard refused, or the test gate went red. The report still stands; re-run, or fix by hand.
+  if `--post`), `autofix.sh` runs one-shot once per lane with something to fix (`lanes.jq`):
+  `stacked` for what the PR introduced, `trunk` for what was already on its base (everything,
+  once merged), and `lint` too with `AUTOFIX_LINT=1`. Each lane's lines come out as
+  `LANE=<lane> STATUS=…`. `--no-fix` skips it; so does `--sha`, which reviews a pinned commit
+  rather than the head.
+  - `opened:<url>`, `exists:<url>`, `none` or `dropped` in every lane -> exit 0.
+  - **Anything else in any lane -> exit 4** with a `NO fix PR` warning: the head moved
+    (`stale`), a guard refused, or the test gate went red. The report still stands; re-run, or fix by hand.
 - **`/peer-review`: its own decision.** It passes `--no-fix` to its engine and runs
   `autofix.sh` in prepare mode, so the fix is frozen for a human; `--ship` opens it.
 
@@ -230,8 +232,8 @@ further than a report: a companion PR with the fix, against that author's own br
 7. **On a clean gate, it commits exactly the staged patch** (none of `pub get`'s debris) on a detached HEAD, so no `fix/…` branch appears in your clone.
    - The commit message is the PR title, then `Reviewed at <sha12>; the PR description carries each finding.` No finding text goes into history.
    - It pushes `fix/pr<N>-review-findings-<sha12>` to origin's push URL, never forced and with no tags, and opens a PR against the reviewed PR's own head branch.
-   - The body is one line of context, then one paragraph per finding: **the claim** (`file:line`) — mechanism.
-   - The body has no headings and no footer. The review report is local-only, so the body carries the reasoning.
+   - The body is one line of context, then one bullet per finding: `file:line` — the claim's first sentence.
+   - No walls of text: no headings, no footer, no mechanism. The diff shows the fix; the reasoning stays in the local review.
    - An `@` that starts a word in the finding text gets a word joiner (U+2060) after it, so `@override` or `@org/team` pings no one. An `@` after `_` counts, since `_@x_` renders as emphasis around a live mention. Email addresses are left alone. GitHub's own renderer (`gh api markdown`) links none of these.
 8. **When origin already has the fix branch but no PR** (a run whose `pr create` failed):
    - If it holds one commit on `<sha>` with this exact tree, the PR is opened on it without pushing. The lookup goes to the push URL, where the push would.
@@ -242,13 +244,15 @@ stdout is a machine-readable protocol. Progress goes to stderr:
 
 | line | meaning | exit |
 |---|---|---|
-| `STATUS=none` | no record for `<sha>`, or no confirmed findings | 0 |
+| `STATUS=none` | no record for `<sha>`, or no confirmed findings in this lane; lint: nothing at `AUTOFIX_LINT_LEVEL` in the packages the PR touches | 0 |
 | `STATUS=exists:<url>` | a fix PR is already there | 0 |
 | `STATUS=prepared` | frozen, nothing pushed (prepare mode) | 0 |
 | `STATUS=opened:<url>` | fix PR is open | 0 |
-| `STATUS=stale` | head moved since the review | 1 |
+| `STATUS=dropped` | trunk lane: the implementer found nothing to fix on trunk -- the defect is the PR's own | 0 |
+| `STATUS=stale` | stacked lane: head moved since the review | 1 |
+| `STATUS=retarget` | stacked lane, ship: the PR merged after prepare -- re-run for the trunk lane | 1 |
 | `REVIEWER=requested\|skipped\|failed:<login>` | after `opened`, when `AUTOFIX_REVIEWER` is set | 0 even if `failed` |
-| `IMPLEMENTER=<model>\|unknown` | before `prepared`/`opened`: the model that wrote the patch. Ship repeats the one frozen at prepare (`unknown` for a freeze older than `model`). `/peer-review` relays it | — |
+| `IMPLEMENTER=<model>\|dart fix\|unknown` | before `prepared`/`opened`: the model that wrote the patch. Ship repeats the one frozen at prepare (`unknown` for a freeze older than `model`). `/peer-review` relays it | — |
 
 Guard, implementer, test-gate, push and `pr create` failures, and a fix branch that isn't this fix, print no STATUS and exit 1.
 
@@ -260,8 +264,12 @@ Guard, implementer, test-gate, push and `pr create` failures, and a fix branch t
 | `AUTOFIX_MODE=prepare AUTOFIX_FROZEN=<dir>` | implement and gate, then freeze `fix.patch`, `title`, `body.md` and `sha` into `<dir>`. Nothing is pushed. |
 | `AUTOFIX_MODE=ship AUTOFIX_FROZEN=<dir>` | re-apply the frozen patch (claude is not re-run), re-gate, then push and open with the frozen title and body. Edits to `body.md` are what gets posted. A blank `title` is refused before anything is pushed. |
 | `AUTOFIX_REVIEWER=<login>` | once the PR is open, request `<login>`'s review. Skipped for yourself and for bots, which GitHub would reject with a 422. |
+| `AUTOFIX_LANE=stacked\|trunk` | `stacked` (default): findings `route` labelled introduced, on the PR's head branch. `trunk`: the `pre-existing` ones -- all of them once the PR merged -- on the tip of its `baseRefName`, branch `fix/pr<N>-preexisting-<sha12>`. The trunk lane skips the stale and fork guards, asks the PR's author to review, and names who last touched each line (no `@`). Prepare freezes `base` = `<branch> <sha>`; ship commits on it. A closed, unmerged PR is refused in both. |
+| `AUTOFIX_TRUNK_REVIEWER=blame` | trunk lane: request whoever last touched the first cited line instead of the PR's author (the author when blame finds no one). |
+| `AUTOFIX_LANE=lint` | no findings needed: on the trunk lane's base, `dart fix --apply --code=…` for the analyzer codes at `AUTOFIX_LINT_LEVEL` in each package the PR's files fall in, then the model only for what's left (`IMPLEMENTER=dart fix` when it never ran). The gate adds: every targeted issue gone, none added. Branch `fix/pr<N>-lint-<sha12>`, PR's author asked. |
+| `AUTOFIX_LINT_LEVEL=warning\|info` | lint lane: the lowest severity it clears (default `warning`: errors and warnings). |
 
-- **Every mode refuses with `STATUS=stale` if the PR head moved since the review** (step 4). For ship, that means since prepare.
+- **Every stacked-lane mode refuses with `STATUS=stale` if the PR head moved since the review** (step 4). For ship, that means since prepare.
 - **Ship reads only the frozen files,** not the review record. Re-running the review between prepare and ship can't change what posts.
 
 `AUTOFIX_DRY_RUN=1` runs everything through the test gate and stops, with no push and no PR. Use it to validate the pipeline against a real PR without touching GitHub:

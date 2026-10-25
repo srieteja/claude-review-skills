@@ -1,0 +1,7 @@
+diff --git a/packages/at_root_server/lib/src/server/at_root_server_impl.dart b/packages/at_root_server/lib/src/server/at_root_server_impl.dart
+--- a/packages/at_root_server/lib/src/server/at_root_server_impl.dart
++++ b/packages/at_root_server/lib/src/server/at_root_server_impl.dart
+@@ -40,6 +40,12 @@ class RootServerImpl implements AtRootServer {
++  Future<void> serveHttpOn(SecureServerSocket socket) async {
++    runZonedGuarded(() => _alpn.listen(acceptSocket), _onError);
++  }

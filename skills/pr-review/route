@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# route -- label each finding `introduced` (the PR brought it in) or `pre-existing` (it was
+# already at the base), from the PR's diff alone.
+#
+#   route --diff <pr.diff> <merged.json>   > merged.json with .route on every finding
+#
+# A finding is introduced when its cited line, or any file:line / file:a-b its mechanism
+# cites, falls on a line the PR adds. The mechanism's cites are what catch "a changed caller
+# now passes a new value to old code": the bug surfaces on an unchanged line, but the cause
+# is cited on an added one. A cite by basename counts against every changed file of that name.
+#
+# The label is mechanical on purpose: a finder labelling its own claim is unchecked. It errs
+# towards introduced -- today's lane -- and a pre-existing label the diff got wrong is caught
+# downstream: the trunk lane's implementer finds nothing to fix on trunk.
+#
+# Targets bash 3.2 (macOS system bash).
+set -euo pipefail
+
+die() { printf 'route: %s\n' "$*" >&2; exit 1; }
+DIFF=""
+while [ $# -gt 1 ]; do
+  case "$1" in
+    --diff) DIFF="$2"; shift 2 ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+[ $# = 1 ] || die "usage: route --diff <pr.diff> <merged.json>"
+[ -f "$DIFF" ] || die "no diff at '$DIFF'"
+[ -f "$1" ] || die "no findings at '$1'"
+
+# The head-side line number of every added line, as path:line. Headers are only read between
+# "diff --git" and the first hunk, so a removed line that reads "--- x" is not a new file.
+ADDED="$(awk '
+  /^diff --git / { hdr = 1; f = ""; next }
+  hdr && /^\+\+\+ / { f = substr($0, 5); if (f == "/dev/null") f = ""; else sub(/^b\//, "", f); next }
+  /^@@ / { hdr = 0; s = $0; sub(/^@@ -[0-9,]+ \+/, "", s); n = s + 0; next }
+  hdr || f == "" { next }
+  /^\+/ { print f ":" n; n++; next }
+  /^ / || $0 == "" { n++ }
+' "$DIFF")"
+
+jq --arg added "$ADDED" '
+  ($added | split("\n") | map(select(. != ""))) as $lines
+  | ($lines | map({key: ., value: true}) | from_entries) as $set
+  | ($lines | map(sub(":[0-9]+$"; "")) | unique) as $paths
+  # A cite is {f, a, b}: a file as written, and the inclusive line range it names.
+  | def cites: [.mechanism // "" | scan("([A-Za-z0-9_./-]+\\.[A-Za-z0-9]+):([0-9]+)(?:-([0-9]+))?")
+                | {f: .[0], a: (.[1] | tonumber), b: ((.[2] // .[1]) | tonumber)}];
+    def added($c): any($paths[] | select(. == $c.f or endswith("/" + $c.f)); . as $p
+                     | any(range($c.a; ([$c.b, $c.a + 2000] | min) + 1); $set["\($p):\(.)"]));
+  map(. + {route: (
+    ([if (.line | type) == "number" then {f: .file, a: .line, b: .line} else empty end] + cites) as $all
+    | if ($all | length) == 0 or any($all[]; added(.)) then "introduced" else "pre-existing" end)})
+' "$1"

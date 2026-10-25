@@ -5,7 +5,7 @@
 # machine.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SB="$(mktemp -d "${TMPDIR:-/tmp}/autofix-test.XXXXXX")"; trap 'rm -rf "$SB"' EXIT
+SB="$(mktemp -d "${TMPDIR:-/tmp}/autofix-test.XXXXXX")"; trap '[ -n "${KEEP:-}" ] || rm -rf "$SB"' EXIT
 export TMPDIR="$SB"                    # autofix.sh's mktemp work dirs land in the sandbox
 fail=0; n=0
 ok()  { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -31,6 +31,7 @@ case "$1 $2" in
     echo "https://github.com/$STUB_REPO/pull/99" ;;
   "pr edit")   exit "${STUB_EDIT_RC:-0}" ;;
   "api user")  echo "$STUB_ME" ;;
+  "api repos/"*) echo "$STUB_BLAME" ;;   # a commit's GitHub author: who last touched a line
   *) echo "gh stub: unhandled: $*" >&2; exit 64 ;;
 esac
 STUB
@@ -44,6 +45,7 @@ git remote > "$STUB_LOG/claude.remotes"
 while [ $# -gt 0 ]; do case "$1" in -p) printf '%s\n' "$2" > "$STUB_LOG/task.md"; shift ;; esac; shift; done
 [ "${STUB_CLAUDE_RC:-0}" = 0 ] || exit "$STUB_CLAUDE_RC"
 [ -n "${STUB_NOOP:-}" ] || git apply "$STUB_PATCH"
+[ -z "${STUB_CLAUDE_SH:-}" ] || sh -c "$STUB_CLAUDE_SH"
 if [ -n "${STUB_COMMIT:-}" ]; then
   git add -A; git -c user.name=x -c user.email=x@example.com commit -qm wip
   git branch -f fix/pr7-review-findings   # refs in its tree must never reach your clone
@@ -58,8 +60,31 @@ cat > "$SB/bin/dart" <<'STUB'
 echo "$*" >> "$STUB_LOG/dart"
 # pub get leaves what the real one does: a lockfile and .dart_tool/, neither part of the fix.
 if [ "$1 $2" = "pub get" ]; then : > pubspec.lock; mkdir -p .dart_tool; fi
+# fix --apply --code=<c>...: clears the marker lines for the codes named that start fix_
+if [ "$1 $2" = "fix --apply" ]; then
+  echo "$PWD $(git rev-parse HEAD)" >> "$STUB_LOG/fix.cwd"
+  for a in "$@"; do
+    case "$a" in --code=fix_*) for f in lib/*.dart; do grep -vxE "(lint|info):${a#--code=}" "$f" > "$f.t" || true; mv "$f.t" "$f"; done ;; esac
+  done
+  exit 0
+fi
 if [ "$1" = test ]; then pwd >> "$STUB_LOG/dart.cwd"; [ -z "${STUB_DART_STDIN:-}" ] || cat >/dev/null; exit "${STUB_DART_RC:-0}"; fi
-if [ "$1" = analyze ]; then pwd >> "$STUB_LOG/analyze.cwd"; exit "${STUB_ANALYZE_RC:-0}"; fi
+# analyze: --format=machine lines, paths absolute like the real one. STUB_ANALYZE_OLD is in
+# every tree; STUB_ANALYZE_NEW only in the gate's patched one (.../tree/...).
+# Each lint:<code> line in lib/*.dart is a warning, each info:<code> an info.
+if [ "$1" = analyze ]; then
+  echo "$PWD $(git rev-parse HEAD)" >> "$STUB_LOG/analyze.cwd"
+  issues="${STUB_ANALYZE_OLD:-}"; case "$PWD" in */tree/*) issues="$issues ${STUB_ANALYZE_NEW:-}" ;; esac
+  for i in $issues; do
+    echo "INFO|HINT|deprecated_member_use|$PWD/test/$i.dart|$RANDOM|3|4|'$i' is deprecated."
+  done
+  for f in lib/*.dart; do
+    [ -f "$f" ] || continue
+    sed -n 's/^lint:\(.*\)/WARNING|LINT|\1/p; s/^info:\(.*\)/INFO|LINT|\1/p' "$f" \
+      | while IFS='|' read -r sev type code; do echo "$sev|$type|$code|$PWD/$f|1|1|1|$code here."; done
+  done
+  exit "${STUB_ANALYZE_RC:-0}"
+fi
 STUB
 chmod +x "$SB/bin/"*
 export PATH="$SB/bin:$PATH" REVIEW_SKILLS_CONFIG="$SB/no-config"
@@ -69,8 +94,9 @@ prlist() {  # prlist <number>:<state>... -- gh pr list --json url,state, in that
   for p in "$@"; do out="$out${out:+,}{\"url\":\"https://github.com/acme/widgets/pull/${p%%:*}\",\"state\":\"${p#*:}\"}"; done
   echo "[$out]"
 }
-prview() {  # prview <isCrossRepository> <headRefOid> [state]
-  printf '{"headRefName":"feature-x","headRefOid":"%s","state":"%s","isCrossRepository":%s}' "$2" "${3:-OPEN}" "$1"
+prview() {  # prview <isCrossRepository> <headRefOid> [state] [file] -- alice's PR from feature-x into main, changing <file>
+  printf '{"headRefName":"feature-x","baseRefName":"main","author":{"login":"alice"},"headRefOid":"%s","state":"%s","isCrossRepository":%s,"files":[{"path":"%s"}]}' \
+    "$2" "${3:-OPEN}" "$1" "${4:-pkg/lib/a.dart}"
 }
 
 # A fresh case: a one-package Dart repo at $SHA, its bare origin at remotes/acme/widgets.git,
@@ -98,7 +124,7 @@ setup() {
   printf 'new\n' > "$C/repo/pkg/lib/a.dart"
   git -C "$C/repo" diff > "$C/fix.patch"; git -C "$C/repo" checkout -q -- .
   cat > "$C/out/merged.json" <<'JSON'
-[{"id":"anthropic.c01-F1","file":"pkg/lib/a.dart","line":1,"claim":"Old value leaks past the reset",
+[{"id":"anthropic.c01-F1","file":"pkg/lib/a.dart","line":1,"claim":"Old value leaks past the reset. A second reset() returns it.",
   "mechanism":"reset() returns before clearing the cache","repro":"call reset twice","v":{"verdict":"CONFIRMED"}},
  {"id":"agy.c01-F1","file":"pkg/lib/a.dart","line":1,"claim":"Possibly racy under isolates",
   "mechanism":"unclear","repro":"none","v":{"verdict":"UNVERIFIABLE"}}]
@@ -106,9 +132,9 @@ JSON
   printf '{"url":"https://github.com/acme/widgets/pull/7","headRefOid":"%s"}' "$SHA" > "$C/out/meta.json"
   FROZEN="$C/out/autofix"
   export STUB_LOG="$C/log" STUB_PATCH="$C/fix.patch" STUB_REPO=acme/widgets STUB_EXISTING="" \
-         STUB_ME=me STUB_EDIT_RC=0 STUB_DART_RC=0 STUB_ANALYZE_RC=0 STUB_CLAUDE_RC=0 STUB_CREATE_RC=0 STUB_DART_STDIN="" \
-         STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success
-  unset AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE AUTOFIX_ANALYZE_ONLY
+         STUB_ME=me STUB_BLAME=bob STUB_EDIT_RC=0 STUB_DART_RC=0 STUB_ANALYZE_RC=0 STUB_ANALYZE_OLD="" STUB_ANALYZE_NEW="" STUB_CLAUDE_RC=0 STUB_CREATE_RC=0 STUB_DART_STDIN="" \
+         STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success STUB_CLAUDE_SH=""
+  unset AUTOFIX_LINT_LEVEL AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_LANE AUTOFIX_TRUNK_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE AUTOFIX_ANALYZE_ONLY
   REFS_BEFORE="$(refs)"
 }
 # patch [--no-fix] <file>... -- the implementer's patch adds each <file>, alongside the a.dart
@@ -133,6 +159,22 @@ occupy_fix_branch() {
   git -C "$C/repo" push -q origin other:refs/heads/$FB
   git -C "$C/repo" checkout -q main; git -C "$C/repo" branch -qD other
 }
+# trunk_commit <line>... -- origin's main moves on by a commit, from wherever it is, that sets
+# pkg/lib/b.dart -- a file the fix leaves alone -- to the lines; $TRUNK is its tip. Local main
+# stays at the reviewed head.
+trunk_commit() {
+  git -C "$C/repo" fetch -q origin main; git -C "$C/repo" checkout -q --detach FETCH_HEAD
+  printf '%s\n' "$@" > "$C/repo/pkg/lib/b.dart"; git -C "$C/repo" add -A
+  git -C "$C/repo" commit -q --allow-empty -m trunk; git -C "$C/repo" push -q origin HEAD:main
+  TRUNK="$(git -C "$C/repo" rev-parse HEAD)"; git -C "$C/repo" checkout -q main; REFS_BEFORE="$(refs)"
+}
+# trunk_ahead -- trunk_commit, and $FB becomes the trunk lane's branch
+trunk_ahead() { trunk_commit more; FB="fix/pr7-preexisting-${SHA:0:12}"; }
+# trunk_lint <line>... -- trunk_commit (lint:<code> a warning, info:<code> an info; dart fix
+# clears fix_* ones), and $FB becomes the lint lane's branch
+trunk_lint() { trunk_commit "$@"; FB="fix/pr7-lint-${SHA:0:12}"; }
+# route <label> -- every finding routed <label>, as pr-review.sh's route step writes it
+route() { jq --arg r "$1" 'map(.route = $r)' "$C/out/merged.json" > "$C/m" && mv "$C/m" "$C/out/merged.json"; }
 run() {  # run [sha] -- autofix.sh for PR #7 against this case; sets rc, captures stdout/stderr
   rc=0
   ( cd "$C/repo" && "$HERE/autofix.sh" 7 "${1:-$SHA}" "$C/repo" "$C/out" ) >"$C/stdout" 2>"$C/stderr" || rc=$?
@@ -178,8 +220,9 @@ check "no reviewer request without AUTOFIX_REVIEWER" never gh "pr edit"
 check "freezes nothing"                        [ ! -e "$FROZEN" ]
 check "task carries the CONFIRMED finding"     logged task.md "Old value leaks past the reset"
 check "task omits the UNVERIFIABLE finding"    never task.md "Possibly racy"
-check "body leads with the bolded claim"       logged body "**Old value leaks past the reset**"
-check "body explains the mechanism"            logged body "reset() returns before clearing the cache"
+check "body is one bullet per finding"          logged body "- \`pkg/lib/a.dart:1\` — Old value leaks past the reset."
+check "  carrying only the claim's first sentence" never body "A second reset()"
+check "  and leaving the mechanism to the review"  never body "reset() returns before clearing the cache"
 check "body omits the UNVERIFIABLE finding"    never body "Possibly racy"
 check "body has no headings"                   no_headings
 check "body has no Claude Code footer"         never body "Generated with"
@@ -304,8 +347,9 @@ check "  says why"                             grep -qi origin "$C/stderr"
 check "  before claude"                           [ "$(calls claude)" = 0 ]
 
 setup; export STUB_PRVIEW="$(prview false "$SHA" MERGED)"; run
-check "PR no longer open: refused"             rc_is 1
+check "merged PR, stacked lane: refused"       rc_is 1
 check "  says why"                             grep -qF MERGED "$C/stderr"
+check "  and where to go"                      grep -qF "trunk lane" "$C/stderr"
 check "  before claude"                           [ "$(calls claude)" = 0 ]
 
 setup; git clone -q --bare "$C/repo" "$C/remotes/acme/elsewhere.git"
@@ -385,17 +429,27 @@ echo "live-rig packs"
 setup live; patch --no-fix tests/live/test/b_test.dart; run
 check "a patch in tests/: opened"              said "STATUS=opened:$URL"
 check "  analyzed there"                       grep -qF /tests/live "$C/log/analyze.cwd"
-check "  at --fatal-infos"                     logged dart "analyze --fatal-infos"
+check "  at --fatal-infos"                     logged dart "analyze --fatal-infos --format=machine"
+check "  against the pack at the reviewed SHA"  grep -qF "/base/tests/live $SHA" "$C/log/analyze.cwd"
 check "  never tested there"                   never dart test
 check "  the body names it"                    logged body '`tests/live`'
 
 setup live; patch tests/live/test/b_test.dart; run
 check "a fix beside a tests/ change: package tested" only_tested_in /pkg
-check "  the pack analyzed"                    [ "$(grep -c . "$C/log/analyze.cwd")" = 1 ]
+check "  the pack analyzed"                    [ "$(grep -c /tree/ "$C/log/analyze.cwd")" = 1 ]
 
-setup live; patch --no-fix tests/live/test/b_test.dart; export STUB_ANALYZE_RC=1; run
-check "analyze fails in tests/: exits 1"       rc_is 1
+setup live; patch --no-fix tests/live/test/b_test.dart; export STUB_ANALYZE_RC=1 STUB_ANALYZE_OLD="old1 old2"; run
+check "issues the pack already had: opened"   said "STATUS=opened:$URL"
+
+setup live; patch --no-fix tests/live/test/b_test.dart
+export STUB_ANALYZE_RC=1 STUB_ANALYZE_OLD="old1" STUB_ANALYZE_NEW="new1"; run
+check "an issue the patch adds: exits 1"       rc_is 1
 check "  never pushes"                         unpushed
+check "  never opens a PR"                     never gh "pr create"
+check "  the log names only the new issue"     sh -c 'grep -q new1 "$1"/gate.*.log && ! grep -q old1 "$1"/gate.*.log' _ "$(sed -n 's/.*(see \(.*\)\/gate\..*/\1/p' "$C/stderr")"
+
+setup live; patch --no-fix tests/live/test/b_test.dart; export STUB_ANALYZE_RC=64; run
+check "the analyzer itself fails: exits 1"     rc_is 1
 check "  never opens a PR"                     never gh "pr create"
 
 setup live; patch --no-fix tests/live/test/b_test.dart; export AUTOFIX_ANALYZE_ONLY=""; run
@@ -419,8 +473,9 @@ check "reports prepared"                       said "STATUS=prepared"
 check "freezes the patch"                      cmp -s "$FROZEN/fix.patch" "$C/fix.patch"
 check "freezes the reviewed SHA"               [ "$(cat "$FROZEN/sha")" = "$SHA" ]
 check "freezes the title"                      [ -s "$FROZEN/title" ]
-check "freezes the body"                       grep -qF "**Old value leaks past the reset**" "$FROZEN/body.md"
+check "freezes the body"                       grep -qF "Old value leaks past the reset." "$FROZEN/body.md"
 check "runs the test gate"                     logged dart test
+check "  one test file at a time, as CI does"  logged dart "test --concurrency=1"
 check "never pushes"                           unpushed
 check "never opens a PR"                       never gh "pr create"
 
@@ -532,6 +587,136 @@ check "  nor one in underscore emphasis"       never body "@dave"
 check "  nor a team in the mechanism"          never body "@acme/core"
 check "  the words survive"                    logged body "override on reset"
 check "  an email address is left alone"       logged body "a@b.com"
+
+echo "trunk lane"
+setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk; run
+check "OPEN, pre-existing: opens a fix PR"     said "STATUS=opened:$URL"
+check "  implemented at trunk's tip"           [ "$(cat "$C/log/claude.head")" = "$TRUNK" ]
+check "  told the tree is trunk, not the PR"   logged task.md 'This tree is `main`'
+check "  on its own branch"                    pushed
+check "  committed on trunk's tip"             [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse "$FB~1")" = "$TRUNK" ]
+check "  carries trunk's own changes"          pushed_has pkg/lib/b.dart
+check "  opened against trunk"                 logged gh "--base main --head $FB"
+check "  asks the PR's author"                 said "REVIEWER=requested:alice"
+check "  says it predates the PR"              logged body 'already on `main`'
+check "  names who last touched the line"      logged body '`pkg/lib/a.dart:1` by `bob`'
+check "  without paging them"                  never body "@bob"
+check "  never touches the stacked branch"     sh -c "! git --git-dir='$C/remotes/acme/widgets.git' rev-parse -q --verify fix/pr7-review-findings-${SHA:0:12}"
+
+setup; trunk_ahead; export AUTOFIX_LANE=trunk; run
+check "OPEN, introduced only: nothing for trunk" said "STATUS=none"
+check "  before claude"                        [ "$(calls claude)" = 0 ]
+
+setup; route pre-existing; run
+check "stacked lane, pre-existing only: nothing" said "STATUS=none"
+check "  before claude"                        [ "$(calls claude)" = 0 ]
+
+setup; jq '. + [.[0] | .id = "anthropic.c02-F1" | .claim = "Stale cache on boot." | .route = "pre-existing"]' \
+  "$C/out/merged.json" > "$C/m" && mv "$C/m" "$C/out/merged.json"; run
+check "stacked lane, mixed: opens"             said "STATUS=opened:$URL"
+check "  the task leaves the pre-existing one out" never task.md "Stale cache"
+check "  so does the body"                     never body "Stale cache"
+
+setup; trunk_ahead; export AUTOFIX_LANE=trunk STUB_PRVIEW="$(prview false "$SHA" MERGED)"; run
+check "MERGED: every finding goes to trunk"    said "STATUS=opened:$URL"
+check "  says the PR merged"                   logged body "since #7 merged"
+check "  the finding is in the body"           logged body "Old value leaks past the reset."
+
+setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN" STUB_NOOP=1; run
+check "not on trunk: dropped"                  said "STATUS=dropped"
+check "  exits 0"                              rc_is 0
+check "  freezes nothing"                      [ ! -e "$FROZEN" ]
+
+setup live; trunk_ahead; route pre-existing; patch --no-fix tests/live/test/b_test.dart; export AUTOFIX_LANE=trunk; run
+check "trunk lane, live-rig pack: opened"      said "STATUS=opened:$URL"
+check "  analyzed against trunk's tip"         grep -qF "/base/tests/live $TRUNK" "$C/log/analyze.cwd"
+
+setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk STUB_PRVIEW="$(prview true "$SHA")"; run
+check "trunk lane, PR from a fork: opened"     said "STATUS=opened:$URL"
+
+setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk STUB_PRVIEW="$(prview false "$SHA" CLOSED)"; run
+check "closed unmerged, trunk lane: refused"   rc_is 1
+check "  before claude"                        [ "$(calls claude)" = 0 ]
+
+setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk STUB_PRVIEW="$(prview false deadbeef)"; run
+check "trunk lane, PR head moved: still opens" said "STATUS=opened:$URL"
+
+setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk AUTOFIX_TRUNK_REVIEWER=blame; run
+check "AUTOFIX_TRUNK_REVIEWER=blame: asks who last touched it" said "REVIEWER=requested:bob"
+
+setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
+check "trunk prepare: freezes its base"        [ "$(cat "$FROZEN/base")" = "main $TRUNK" ]
+OLD_TRUNK="$TRUNK"; trunk_ahead; export AUTOFIX_MODE=ship; run
+check "  ship opens"                           said "STATUS=opened:$URL"
+check "  on the frozen base, not the new tip"  [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse "$FB~1")" = "$OLD_TRUNK" ]
+
+setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
+check "stacked prepare: freezes its base"      [ "$(cat "$FROZEN/base")" = "feature-x $SHA" ]
+export AUTOFIX_MODE=ship STUB_PRVIEW="$(prview false "$SHA" MERGED)"; run
+check "  merged before ship: retarget"         said "STATUS=retarget"
+check "  never pushes"                         unpushed
+
+echo "lint lane"
+setup; run
+check "off by default: no dart fix"            never dart "fix --apply"
+
+# trunk_lint <line>... -- main moves past the reviewed head with pkg/lib/b.dart holding each
+# analyzer marker line (lint:<code> a warning, info:<code> an info; fix_* ones dart fix clears)
+setup; trunk_lint lint:fix_unused info:fix_deprecated; export AUTOFIX_LANE=lint STUB_NOOP=1; run
+check "AUTOFIX_LANE=lint: opens a fix PR"       said "STATUS=opened:$URL"
+check "  dart fix at trunk's tip"              grep -qF " $TRUNK" "$C/log/fix.cwd"
+check "  in the package the PR touches"        grep -q '/pkg ' "$C/log/fix.cwd"
+check "  dart fix cleared it: claude not run"  [ "$(calls claude)" = 0 ]
+check "  IMPLEMENTER says so"                  said "IMPLEMENTER=dart fix"
+check "  on its own branch"                    pushed
+check "  committed on trunk's tip"             [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse "$FB~1")" = "$TRUNK" ]
+check "  the warning is gone"                  sh -c "! git --git-dir='$C/remotes/acme/widgets.git' show $FB:pkg/lib/b.dart | grep -q fix_unused"
+check "  the info is left alone by default"    sh -c "git --git-dir='$C/remotes/acme/widgets.git' show $FB:pkg/lib/b.dart | grep -q fix_deprecated"
+check "  opened against trunk"                 logged gh "--base main --head $FB"
+check "  asks the PR's author"                 said "REVIEWER=requested:alice"
+check "  the body names the issue"             logged body 'fix_unused'
+check "  and no findings"                      never body "Old value leaks"
+check "  gated by the package's tests"         logged dart test
+
+setup; trunk_lint info:fix_deprecated; export AUTOFIX_LANE=lint STUB_NOOP=1; run
+check "infos only: nothing to lint"            said "STATUS=none"
+check "  exits 0"                              rc_is 0
+check "  no dart fix, no claude"               [ "$(calls claude)" = 0 ] && never dart "fix --apply"
+
+setup; trunk_lint info:fix_deprecated; export AUTOFIX_LANE=lint AUTOFIX_LINT_LEVEL=info STUB_NOOP=1; run
+check "AUTOFIX_LINT_LEVEL=info: infos too"     said "STATUS=opened:$URL"
+
+setup; trunk_lint lint:fix_unused lint:hard_one; export AUTOFIX_LANE=lint STUB_NOOP=1 \
+  STUB_CLAUDE_SH='grep -v hard_one pkg/lib/b.dart > t; mv t pkg/lib/b.dart'; run
+check "what dart fix can't: claude clears it"  said "STATUS=opened:$URL"
+check "  its task names only what's left"      logged task.md hard_one
+check "  not what dart fix cleared"            never task.md fix_unused
+check "  IMPLEMENTER is the model"             said "IMPLEMENTER=claude-opus-5-5"
+
+setup; trunk_lint lint:fix_unused lint:hard_one; export AUTOFIX_LANE=lint STUB_NOOP=1; run
+check "an issue left standing: no PR"          rc_is 1
+check "  never pushes"                         unpushed
+
+setup; trunk_lint lint:hard_one; export AUTOFIX_LANE=lint STUB_NOOP=1 \
+  STUB_CLAUDE_SH='printf "" > pkg/lib/b.dart; echo lint:new_one > pkg/lib/c.dart'; run
+check "the fix adds an issue: no PR"           rc_is 1
+check "  says which"                           grep -qF new_one "$C/stderr"
+check "  never pushes"                         unpushed
+
+setup twopkg; trunk_lint lint:fix_unused; export AUTOFIX_LANE=lint STUB_NOOP=1 STUB_PRVIEW="$(prview false "$SHA" OPEN pkg2/lib/x.dart)"; run
+check "a package the PR doesn't touch: left alone" said "STATUS=none"
+
+setup; trunk_lint lint:fix_unused; rm "$C/out/merged.json" "$C/out/meta.json"; export AUTOFIX_LANE=lint STUB_NOOP=1; run
+check "a clean review (no findings): still lints" said "STATUS=opened:$URL"
+
+setup; trunk_lint lint:fix_unused; export AUTOFIX_LANE=lint STUB_NOOP=1 STUB_PRVIEW="$(prview false "$SHA" MERGED)"; run
+check "MERGED: lints trunk"                    said "STATUS=opened:$URL"
+
+setup; trunk_lint lint:fix_unused; export AUTOFIX_LANE=lint STUB_NOOP=1 AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
+check "lint prepare: freezes its base"         [ "$(cat "$FROZEN/base")" = "main $TRUNK" ]
+OLD_TRUNK="$TRUNK"; trunk_lint lint:fix_unused more; export AUTOFIX_MODE=ship; run
+check "  ship opens"                           said "STATUS=opened:$URL"
+check "  on the frozen base"                   [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse "$FB~1")" = "$OLD_TRUNK" ]
 
 echo "reviewer request"
 setup; export AUTOFIX_REVIEWER=alice; run

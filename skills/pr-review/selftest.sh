@@ -27,6 +27,16 @@ say() { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
 
 case "$REFUTER" in *:?*) ;; *) die "PR_REVIEW_REFUTER must be transport:model, got: $REFUTER" ;; esac
 ROOT="$(git rev-parse --show-toplevel)" || die "not inside a git repository"
+# Assets resolve from this script's own directory, so the toolkit can live anywhere
+# (it does: ~/.claude/skills/pr-review). ROOT is the repo being reviewed, from cwd.
+# The diagram check's pinned deps (diagram.sh -> mermaid-check.mjs), installed once here
+# rather than per review. Without node a review still runs and skips the check.
+if command -v node >/dev/null; then
+  [ -d "$HERE/mermaid/node_modules" ] || npm ci --prefix "$HERE/mermaid" --no-audit --no-fund >&2 \
+    || die "npm ci --prefix $HERE/mermaid failed"
+else
+  printf '\033[33m!!\033[0m selftest: node not found; pr-review will skip the diagram check\n' >&2
+fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/pr-review-selftest.XXXXXX")"
 TREE="$WORK/tree"
 

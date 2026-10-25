@@ -342,13 +342,23 @@ say "    tree $SHA"
 # and the COUNT==0 path below exits without ever reaching report.jq. Non-fatal throughout --
 # stage 1 is the review, and a PR whose brief failed is still reviewable.
 BRIEF_OK=0
+# The brief's "How it fits together" diagram: parsed by mermaid itself and grounded against the
+# diff (diagram.sh), into pr<N>-diagram.{mmd,json} for the Reviews page. Never fatal.
+# PR_REVIEW_DIAGRAM=0 skips the check and keeps the explainer as written.
+diagram() {
+  if [ "${PR_REVIEW_DIAGRAM:-1}" = 0 ]; then say "stage 0.5: diagram check skipped (PR_REVIEW_DIAGRAM=0)"; return; fi
+  "$HERE/diagram.sh" --sha "$SHA" --model "$BRIEF_MODEL" "$@" "$BRIEF" "$WORK/pr.diff" \
+    || warn "stage 0.5: diagram not checked -- node or $HERE/mermaid missing (selftest.sh installs it)"
+}
 if [ "$NO_BRIEF" -eq 1 ]; then
   say "stage 0.5: brief skipped ($NO_BRIEF_WHY)"
 else
+  rm -f "$OUTDIR/pr${PR}-diagram.mmd" "$OUTDIR/pr${PR}-diagram.json"   # the last brief's
   BRIEF_PROMPT_ID="$(cksum < "$HERE/brief.prompt" | awk '{print $1}')"
   BRIEF_CACHE="$CACHE_ROOT/brief-$SHA-$BRIEF_PROMPT_ID-$(printf '%s' "$BRIEF_MODEL" | tr -c 'A-Za-z0-9._-' '_').md"
   if [ "$NO_CACHE" -eq 0 ] && [ -s "$BRIEF_CACHE" ]; then
     cp "$BRIEF_CACHE" "$BRIEF"; BRIEF_OK=1; say "stage 0.5: brief cached"
+    diagram   # no repair: this one's diagram was settled before it was cached
   else
     say "stage 0.5: brief ($BRIEF_MODEL/$BRIEF_EFFORT)"
     head -c "$CHUNK_BYTES" "$WORK/pr.diff" > "$WORK/brief.diff"
@@ -387,6 +397,9 @@ else
         printf 'description alone — no source was read, and nothing here is a review finding.\n\n'
         jq -L "$HERE" -r "$LAST_EVENT"' | .result' "$WORK/brief.json"
       } > "$BRIEF"
+      # At most one repair call, and it rewrites the block in $BRIEF. Cached only after, so a
+      # rerun at this sha is served the checked brief, never one with a broken diagram.
+      diagram --repair
       mkdir -p "$CACHE_ROOT" && cp "$BRIEF" "$BRIEF_CACHE"
       BRIEF_OK=1
       say "wrote $BRIEF"
@@ -736,8 +749,12 @@ if [ "$NFINDERS" -gt 1 ] && [ -z "$FINDINGS_IN" ]; then
   jq -f "$HERE/agree.jq" "$WORK/merged.json" > "$WORK/merged.agreed" || die "stage 3: agree.jq failed"
   mv "$WORK/merged.agreed" "$WORK/merged.json"
 fi
+# Sets .route: introduced (a line the PR adds) or pre-existing -- which fix lane a finding takes.
+"$HERE/route" --diff "$WORK/pr.diff" "$WORK/merged.json" > "$WORK/merged.routed" \
+  || die "stage 3: route failed"
+mv "$WORK/merged.routed" "$WORK/merged.json"
 
-jq -r -f "$HERE/report.jq" \
+jq -r -L "$HERE" -f "$HERE/report.jq" \
   --arg pr "$PR" --arg title "$TITLE" --arg url "$URL" --arg sha "$SHA" \
   --arg om "$LABELS" --arg gm "$R_LABEL" --arg same "$SAME_FAMILY" --arg burden "$BURDEN" --arg gaps "$GAPS" --arg gap_notes "$GAP_NOTES" \
   "$WORK/merged.json" > "$OUT" || die "stage 3: report generation failed"
@@ -766,7 +783,9 @@ post() {
   fi
   if [ "$INLINE" -eq 1 ]; then
     [ -s "$OUTDIR/inline.json" ] || die "stage 4: --inline needs $OUTDIR/inline.json"
-    gh api "repos/$REPO/pulls/$PR/reviews" --input "$OUTDIR/inline.json" >/dev/null \
+    # "marker" is inline.py's, not GitHub's.
+    jq 'del(.comments[].marker)' "$OUTDIR/inline.json" > "$WORK/inline.post.json"
+    gh api "repos/$REPO/pulls/$PR/reviews" --input "$WORK/inline.post.json" >/dev/null \
       || die "stage 4: gh api reviews failed"
   else
     gh pr comment "$PR" --body-file "$OUT" || die "stage 4: gh pr comment failed"
@@ -775,21 +794,30 @@ post() {
 }
 post
 
-# ------------------------------------------------------------- stage 5: fix PR
-# A fix author's CONFIRMED findings get a companion PR on top of theirs, from the head this
-# review read: autofix.sh implements, gates on the touched packages' tests, pushes, opens it
-# and asks the author to review. A PR it owed and didn't open is exit 4, never a quiet 0.
+# ------------------------------------------------------------- stage 5: fix PRs
+# A fix author's CONFIRMED findings get fix PRs, one per lane (lanes.jq): what the PR introduced
+# stacked on its head as this review read it, what was already at its base on trunk's tip, and
+# with AUTOFIX_LINT=1 trunk's analyzer issues in the packages it touches. autofix.sh implements,
+# gates on the touched packages' tests, pushes, opens each and asks the author to review. A
+# lane that owed a PR and didn't open one is exit 4, never a quiet 0.
 CONFIRMED="$(jq '[.[] | select(.v.verdict == "CONFIRMED")] | length' "$OUTDIR/merged.json")"
 { [ "$NO_FIX" -eq 0 ] && [ "$CONFIRMED" -gt 0 ] && is_fix_author "$AUTHOR"; } || exit 0
 [ -z "$PIN" ] || { say "stage 5: --sha reviewed a pinned commit, not the head -- no fix PR"; exit 0; }
-say "stage 5: a fix PR for $AUTHOR's $CONFIRMED confirmed finding(s)"
-rc=0
-FIX="$(env -u AUTOFIX_MODE -u AUTOFIX_FROZEN AUTOFIX_REVIEWER="$AUTHOR" \
-  "$AUTOFIX" "$PR" "$SHA" "$ROOT" "$OUTDIR")" || rc=$?
-printf '%s\n' "$FIX"
-case "$rc:$FIX" in
-  0:*STATUS=opened:*|0:*STATUS=exists:*) exit 0 ;;
-  *STATUS=stale*) warn "stage 5: #$PR moved past ${SHA:0:12} during the review -- NO fix PR opened; re-run the review" ;;
-  *) warn "stage 5: autofix opened NO fix PR for #$PR (exit $rc) -- see above; the findings stand in $OUT" ;;
-esac
-exit 4
+LANES="$(jq -r -L "$HERE" --arg s "$(jq -r .state "$OUTDIR/meta.json")" \
+  'include "lanes"; fix_lanes($s) | join(" ")' "$OUTDIR/merged.json")"
+[ "${AUTOFIX_LINT:-0}" != 1 ] || LANES="$LANES lint"
+say "stage 5: fix PRs for $AUTHOR's $CONFIRMED confirmed finding(s) -- lanes: $LANES"
+OWED=0
+for lane in $LANES; do
+  rc=0
+  FIX="$(env -u AUTOFIX_MODE -u AUTOFIX_FROZEN AUTOFIX_LANE="$lane" AUTOFIX_REVIEWER="$AUTHOR" \
+    "$AUTOFIX" "$PR" "$SHA" "$ROOT" "$OUTDIR")" || rc=$?
+  printf '%s\n' "$FIX" | sed "s/^STATUS=/LANE=$lane STATUS=/"
+  case "$rc:$FIX" in
+    0:*STATUS=opened:*|0:*STATUS=exists:*|0:*STATUS=none*) ;;
+    0:*STATUS=dropped*) warn "stage 5: the trunk lane found nothing to fix on trunk -- dropped; see $OUT" ;;
+    *STATUS=stale*) OWED=1; warn "stage 5: #$PR moved past ${SHA:0:12} during the review -- NO fix PR opened ($lane lane); re-run the review" ;;
+    *) OWED=1; warn "stage 5: autofix opened NO fix PR for #$PR ($lane lane, exit $rc) -- see above; the findings stand in $OUT" ;;
+  esac
+done
+[ "$OWED" = 0 ] || exit 4
