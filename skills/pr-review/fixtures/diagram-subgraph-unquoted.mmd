@@ -1,0 +1,15 @@
+flowchart LR
+  subgraph Roadmap
+    KS["at_persistence_secondary_server 5.3.0<br/>10 primitives published"] --> AC["at_client consumers<br/>(steps 2,4,...,20: not started)"]
+  end
+  subgraph Envelope §9.4
+    SE["SignedEnvelope.fromJson"] --> ES["EnvelopeSignature entries<br/>protected: alg, typ, kid, enid, v"]
+    ES -->|"alg picks entry"| V["Verifier"]
+    V -->|"kid picks key"| APSK["_apsk advertised keys"]
+    RL["Root link (plain map)"] -->|"at-root-link: prefix"| PRK["public:pq_signing_root"]
+  end
+  subgraph Mint ruling 105
+    ML["MintLock (ttl required, no release)"] --> MU["_mintUnlessPublished (adopts)"]
+    ML --> RT["rotate → _mint (throws on lost lock)"]
+    MU --> LS["MintLease (stamped before take)"]
+  end

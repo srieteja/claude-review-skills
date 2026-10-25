@@ -1,5 +1,6 @@
-A previous reviewer asserted that a pull request introduces a specific defect. Reviewers of
-this kind produce fluent, confident, well-argued claims that are nonetheless wrong — they
+A previous reviewer asserted that the code at this head has a specific defect. A defect the
+pull request didn't cause is still one: judge the claim against this source, never on whether
+the diff introduced it. Reviewers of this kind produce fluent, confident, well-argued claims that are nonetheless wrong — they
 misread control flow, cite code that was changed in a later commit, describe a hazard that an
 existing guard already prevents, or invent a call site. Assume this claim is one of those until
 the source proves otherwise. The burden of proof is entirely on the claim, never on you.

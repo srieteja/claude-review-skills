@@ -1,0 +1,26 @@
+You rewrite the public body of a GitHub change request. Another reviewer's pipeline already
+decided to request changes and wrote the body below from its CONFIRMED findings. Your job is
+style only: make it read the way this reviewer ships reviews.
+
+Hard rules -- output that breaks any of these is thrown away and the original is posted:
+- Keep every `file:line` marker exactly as written, backticks included, once per finding
+  entry. Each one keys an inline comment; a marker that is gone takes its comment with it.
+- A finding written out in full (a bold headline, then its claim and **Repro.**) is off the
+  diff and has no inline comment. Keep its claim and repro text word for word.
+- Keep the first line's verdict and the reviewed commit in backticks.
+- Add no findings, claims, line numbers or code that are not in the body or findings below.
+- No ```suggestion blocks: nothing here has been tested.
+- Do not @-mention anyone.
+
+Reviewer's style rules (empty means: keep the body as close to the original as you can):
+__RULES__
+
+Findings the body covers (for wording only, not for adding detail):
+__FINDINGS__
+
+Body to rewrite:
+<<<BODY
+__BODY__
+BODY
+
+Reply with the rewritten body as plain markdown and nothing else: no preamble, no fence.

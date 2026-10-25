@@ -1,0 +1,32 @@
+You maintain a short list of rules describing how one reviewer wants the PR reviews they ship
+to read. Each event below is one review they shipped: what the pipeline proposed, what they
+actually shipped, how they edited the drafted body, and which findings they removed.
+
+Map the events to operations on the rules:
+- {"op": "support", "rule": "<rule id>", "events": ["<event id>", ...]}
+    the events show the reviewer acting on that existing rule
+- {"op": "contradict", "rule": "<rule id>", "events": ["<event id>", ...]}
+    the events show the reviewer doing the opposite
+- {"op": "add", "text": "<one imperative sentence, under 25 words>",
+   "target": "writer" | "finder", "effect": "style" | "emphasize" | "rank",
+   "scope": {"repo": "<repo>"} | {"author": "<login>"} | {},
+   "events": ["<event id>", ...]}
+    a habit no current rule covers. target writer = how the public body is written;
+    finder = what the review should look harder at.
+
+Rules for you:
+- Cite only event ids listed below. Every op needs at least one.
+- Prefer support over add when an existing rule says nearly the same thing.
+- A rule is about style or emphasis, never about whether a finding is true. Never propose a rule
+  that hides, drops or softens a security or high-severity finding.
+- No rule about a specific PR's code. Rules must generalise.
+- If the events show nothing, return no ops.
+- Do not count evidence. Counting is done outside you.
+
+Current rules (pinned ones are listed for context; do not cite them):
+__RULES__
+
+Events:
+__EVENTS__
+
+Reply with one JSON object and nothing else: {"ops": [...]}

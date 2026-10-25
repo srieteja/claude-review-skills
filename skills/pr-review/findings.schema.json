@@ -14,7 +14,8 @@
           "file": {"type": "string", "description": "Path relative to the tree."},
           "line": {"type": "integer", "description": "Line in THIS tree."},
           "severity": {"type": "string", "enum": ["high", "medium", "low"]},
-          "claim": {"type": "string", "description": "One sentence: what breaks."},
+          "title": {"type": "string", "description": "At most 12 words: what breaks, no call chain. Heads the report's row and section."},
+          "claim": {"type": "string", "description": "At most 30 words: what breaks. Who calls it and when goes in mechanism."},
           "mechanism": {"type": "string", "description": "The path from entry point to wrong outcome, naming the functions and lines traced."},
           "repro": {"type": "string", "description": "Concrete inputs or state -> the wrong result."}
         }
