@@ -316,7 +316,7 @@ lint_prepass() {
     echo "You are running unattended: no one will answer a question or approve a plan, so"
     echo "make the edits now. \`dart fix\` has already run here; clear each \`dart analyze\` issue"
     echo "below that it couldn't, without changing behaviour. Stay inside this directory, leave"
-    echo ".github/ alone, and run \`dart analyze\` and \`dart test\` in each package you touch."
+    echo ".github/ alone, and run \`dart analyze\` and \`dart test --concurrency=1\` in each package you touch."
     task_rules
     echo
     awk -F'|' '{ print "- " $3 ": " $2 " -- " $4 }' "$WORK/lint.left"
@@ -350,7 +350,7 @@ else
       echo "review. Each was traced to a real defect and independently verified against this"
       echo "exact source -- do not re-litigate whether it's a bug, only how to fix it correctly"
       echo "and minimally. Stay inside this directory, leave .github/ alone, add or update a"
-      echo "test where one would have caught it, and run \`dart test\` in each package you touch."
+      echo "test where one would have caught it, and run \`dart test --concurrency=1\` in each package you touch."
       task_rules
       # The safety net for a mis-routed finding: one that lives only in the PR isn't here, and
       # an empty patch drops it rather than shipping a guess.
@@ -445,7 +445,9 @@ while IFS= read -r pkg; do
       || { warn "dart analyze: the patch adds issues to $pkg -- no PR (see $LOG)"; exit 1; }
   else
     say "testing $pkg"
-    ( cd "$TREE/$pkg" && dart pub get && dart test ) </dev/null >"$LOG" 2>&1 \
+    # --concurrency=1, as the atsign repos' CI runs them: test files share on-disk state
+    # (at_secondary_server's unit_test_storage), and run in parallel they race on it.
+    ( cd "$TREE/$pkg" && dart pub get && dart test --concurrency=1 ) </dev/null >"$LOG" 2>&1 \
       || { warn "dart test failed in $pkg -- no PR (see $LOG)"; exit 1; }
   fi
 done < <(printf '%s' "$PACKAGES" | LC_ALL=C sort -u)

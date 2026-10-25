@@ -473,6 +473,7 @@ check "freezes the reviewed SHA"               [ "$(cat "$FROZEN/sha")" = "$SHA"
 check "freezes the title"                      [ -s "$FROZEN/title" ]
 check "freezes the body"                       grep -qF "Old value leaks past the reset." "$FROZEN/body.md"
 check "runs the test gate"                     logged dart test
+check "  one test file at a time, as CI does"  logged dart "test --concurrency=1"
 check "never pushes"                           unpushed
 check "never opens a PR"                       never gh "pr create"
 
