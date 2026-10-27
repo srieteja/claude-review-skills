@@ -66,7 +66,7 @@ cmd_install() {
 show_models() {
   local flag=""
   if resolve_models "$1" 2>/dev/null; then
-    [ "$SAME_FAMILY" = 0 ] || flag="  (same family as a finder: weaker refutation)"
+    [ "$SAME_FAMILY" = 0 ] || flag="  (same family as a finder: weaker refutation$(refuter_why))"
     printf '  %-8s %s -> refuted by %s%s\n' "$1" "$RESOLVED_FINDERS" "$RESOLVED_REFUTER" "$flag"
   else
     printf '  %-8s no model is reachable\n' "$1"; return 1
@@ -87,14 +87,20 @@ cmd_models() {
 }
 
 cmd_doctor() {
-  local rc=0 t cfg k
+  local rc=0 t cfg k gh_err
   say "tools"
   for t in bash git gh jq curl python3 awk find; do
     if command -v "$t" >/dev/null 2>&1; then good "$t"; else poor "$t missing"; rc=1; fi
   done
   for t in timeout gtimeout; do command -v "$t" >/dev/null 2>&1 && { good "$t"; break; }; done \
     || note "no timeout/gtimeout: an anthropic or ollama refuter cannot run"
-  if gh auth status >/dev/null 2>&1; then good "gh signed in"; else poor "gh not signed in (gh auth login)"; rc=1; fi
+  if gh_err="$(gh auth status 2>&1 >/dev/null)"; then good "gh signed in"
+  else
+    # gh knows why (no login, a bad token, a keyring it cannot read): quote it, don't guess.
+    gh_err="$(printf '%s\n' "$gh_err" | sed 's/^[[:space:]]*[-X]*[[:space:]]*//' \
+      | grep -v -e '^github\.com$' -e '^Failed to log in' -e '^Active account' -e '^To ' | head -1)"
+    poor "gh: ${gh_err:-not signed in} (gh auth login, or set GH_TOKEN)"; rc=1
+  fi
 
   say "config"
   cfg="$(config_file)"

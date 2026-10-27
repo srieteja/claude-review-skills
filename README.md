@@ -35,13 +35,15 @@ git clone https://github.com/srieteja/claude-review-skills ~/src/review-skills
 - **Installing elsewhere:** set `CLAUDE_SKILLS_DIR` to put the links somewhere other than `~/.claude/skills`.
 - **Conflicts:** `install` never overwrites anything. If something is already in the way, it names it and exits non-zero.
 
-## Backends: any one is enough
+## Backends: claude alone is enough
 
-| Backend | How to enable | Model family |
-|---|---|---|
-| anthropic | `claude auth login` (subscription), or `ANTHROPIC_USE_API_KEY=1` + `ANTHROPIC_API_KEY` | Claude |
-| agy | sign in to antigravity; it takes no key | Gemini |
-| ollama | `OLLAMA_API_KEY` | glm, kimi, … |
+With only `claude` signed in, Opus finds and Sonnet refutes. That works, and the report flags the refuter as being from the finder's own family. Add agy or ollama to get a refuter from a different family, which refutes more independently. Neither is required.
+
+| Backend | How to enable | Model family | Needed? |
+|---|---|---|---|
+| anthropic | `claude auth login` (subscription), or `ANTHROPIC_USE_API_KEY=1` + `ANTHROPIC_API_KEY` | Claude | the usual start |
+| agy | sign in to antigravity; it takes no key | Gemini | optional: a different-family refuter |
+| ollama | `OLLAMA_API_KEY` | glm, kimi, … | optional: a different-family refuter |
 
 - **Keys:** put them in `~/.config/review-skills/config.env`. Override the path with `REVIEW_SKILLS_CONFIG`.
 - **Precedence:** a variable set in the environment beats the file.
@@ -53,10 +55,10 @@ git clone https://github.com/srieteja/claude-review-skills ~/src/review-skills
 
 `REVIEW_SKILLS_MODELS=auto` is the default. It works like this:
 
-1. **Probe.** It finds which backends answer on this machine. Model lists are cached for a day.
+1. **Probe.** It finds which backends answer on this machine. A backend that doesn't answer is asked once more. Model lists are cached for a day.
 2. **Pick.** It takes the best reachable rows from [`lib/models.tsv`](lib/models.tsv): one finder for a regular review, one per transport for intense.
 3. **Refuter.** It prefers a refuter outside every finder's family. It drops a second finder if keeping it would leave no such refuter.
-4. **Report.** `review-skills models` prints the result and flags a same-family refuter as weaker refutation.
+4. **Report.** `review-skills models` prints the result and flags a same-family refuter as weaker refutation. If agy or ollama is set up but didn't answer, the flag names it. A run never fails for want of a second family.
 
 To choose models yourself:
 
@@ -64,10 +66,36 @@ To choose models yourself:
 - **Pins:** set `PR_REVIEW_FINDERS`, `PR_REVIEW_REFUTER`, `PR_REVIEW_INTENSE_FINDERS` or `PR_REVIEW_INTENSE_REFUTER`. A pin is used as written.
 
 ```text
-$ review-skills models
+$ review-skills models          # claude only
+  regular  anthropic:claude-opus-5-5@xhigh -> refuted by anthropic:claude-sonnet-5-5  (same family as a finder: weaker refutation)
+  intense  anthropic:claude-opus-5-5@max -> refuted by anthropic:claude-sonnet-5-5  (same family as a finder: weaker refutation)
+
+$ review-skills models          # claude, agy and ollama
   regular  anthropic:claude-opus-5-5@xhigh -> refuted by agy:gemini-3.8-flash-high
   intense  anthropic:claude-opus-5-5@max agy:gemini-3.8-flash-high -> refuted by ollama:glm-5.3-flash
 ```
+
+## Run from a checkout
+
+Installing is optional. From inside a clone of the repo under review, run the script directly:
+
+```bash
+cd ~/src/the-repo-under-review
+~/src/review-skills/skills/pr-review/pr-review.sh 123 --keep
+```
+
+It reads PR 123 of that clone's GitHub remote and writes the report to the store (see below). Nothing is posted without `--post`.
+
+## Where files go
+
+| What | Default | Moved by |
+|---|---|---|
+| reports (the store) | `~/.reviews` | `PR_REVIEW_DIR` |
+| work dir and PR-head checkout, one per run | `$TMPDIR/pr-review-<N>.XXXXXX`, removed unless `--keep` | `TMPDIR` |
+| finder and brief cache, keyed by head SHA | `$TMPDIR/pr-review-cache` | `TMPDIR` |
+| model lists, a day old at most | `~/.cache/review-skills` | `REVIEW_SKILLS_CACHE`, `XDG_CACHE_HOME` |
+| one-run-per-PR locks | `~/.local/state/review-skills/locks` | `REVIEW_SKILLS_LOCK_DIR`, `XDG_STATE_HOME` |
+| config | `~/.config/review-skills/config.env` | `REVIEW_SKILLS_CONFIG`, `XDG_CONFIG_HOME` |
 
 ## Cost and data
 

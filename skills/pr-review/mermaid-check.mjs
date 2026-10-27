@@ -62,7 +62,7 @@ try {
   for (const k of ["log", "warn", "error", "info", "debug"]) console[k] = () => {};
   mermaid = (await import(pathToFileURL(req.resolve("mermaid")).href)).default;
 } catch (e) {
-  die(`deps missing (run: npm ci --prefix ${new URL("./mermaid", import.meta.url).pathname}): ${e.message}`);
+  die(`deps missing (run: review-skills install, or npm ci --prefix ${new URL("./mermaid", import.meta.url).pathname}): ${e.message}`);
 }
 
 let error = null;

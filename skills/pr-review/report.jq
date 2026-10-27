@@ -13,7 +13,7 @@ include "confirmed";
 
 def rule: if $burden == "evidence"
           then "A refutation needed quoted counter-evidence; a claim that could be neither confirmed nor disproved stays in as UNVERIFIABLE."
-          else "A claim that could not be confirmed counts as refuted." end;
+          else "A claim that could not be confirmed counts as refuted; the refuter could answer UNVERIFIABLE only when the outcome depends on state outside the repository." end;
 def bucket: if .v.verdict == "CONFIRMED" then "confirmed"
             elif .v.verdict == "REFUTED" then "refuted"
             else "disputed" end;

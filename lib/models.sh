@@ -7,8 +7,9 @@
 #   ollama     OLLAMA_API_KEY that ollama.com accepts (/v1/models is open to anyone, so the
 #              key is proven with a 1-token call)
 #
-# REVIEW_SKILLS_MODELS=manual skips the probes and takes every preset's first rows. A model
-# list that answered is cached for a day under models_cache; one that did not is asked again.
+# REVIEW_SKILLS_MODELS=manual skips the probes and takes every preset's first rows. A backend
+# that does not answer is asked once more, so one blip does not cost the cross-family refuter.
+# A model list that answered is cached for a day under models_cache; one that did not is not.
 #
 # Targets bash 3.2 (macOS system bash).
 
@@ -63,13 +64,13 @@ ollama_list() {
 }
 
 # models_of <agy|ollama>: the models that transport serves, from a cache under a day old or
-# asked afresh. Only a list that answered is cached.
+# asked afresh, twice if need be. Only a list that answered is cached.
 models_of() {
   local f list
   f="$(models_cache)/$1.models"
   if [ -s "$f" ] && [ -n "$(find "$f" -mmin -1440 2>/dev/null)" ]; then cat "$f"; return 0; fi
   rm -f "$f"
-  list="$("$1_list")" && [ -n "$list" ] || return 1
+  list="$("$1_list" || "$1_list")" && [ -n "$list" ] || return 1
   mkdir -p "$(models_cache)"
   printf '%s\n' "$list" > "$f.$$" && mv "$f.$$" "$f"
   printf '%s\n' "$list"
@@ -91,14 +92,16 @@ _spec_reachable() {
 _rows() { awk -F'\t' -v p="$1" -v r="$2" '$1 == p && $2 == r { print $3 }' "$MODELS_TSV"; }
 
 # resolve_models <regular|intense>: sets RESOLVED_FINDERS (space-separated specs),
-# RESOLVED_REFUTER, SAME_FAMILY (1: the refuter shares a family with a finder) and CLAUDE_OK
-# (1: claude can run, for the brief). A pin is taken as given:
+# RESOLVED_REFUTER, SAME_FAMILY (1: the refuter shares a family with a finder), CLAUDE_OK
+# (1: claude can run, for the brief) and MODELS_SILENT (backends set up -- an ollama key, agy on
+# PATH -- that did not answer; refuter_why names them). A pin is taken as given:
 #   regular  PR_REVIEW_FINDERS, else PR_REVIEW_TRANSPORT/S1_MODEL (alias OPUS_MODEL)/S1_EFFORT;
 #            PR_REVIEW_REFUTER, else agy:$PR_REVIEW_GEMINI_MODEL
 #   intense  PR_REVIEW_INTENSE_FINDERS, PR_REVIEW_INTENSE_REFUTER
 # Returns 1, naming every way in, when no finder is reachable.
 resolve_models() {
   local fpin rpin max spec t seen=" " n=0
+  MODELS_SILENT=""
   case "$1" in
     regular)
       fpin="${PR_REVIEW_FINDERS:-}"
@@ -119,6 +122,11 @@ resolve_models() {
       if [ -z "$fpin" ] || [ -z "$rpin" ]; then
         _MODELS_AGY="$(models_of agy)" || _MODELS_AGY=""
         _MODELS_OLLAMA="$(models_of ollama)" || _MODELS_OLLAMA=""
+      fi
+      # Only a refuter left to auto-pick can blame a backend for not answering.
+      if [ -z "$rpin" ]; then
+        [ -z "${OLLAMA_API_KEY:-}" ] || [ -n "$_MODELS_OLLAMA" ] || MODELS_SILENT="ollama"
+        ! command -v agy >/dev/null 2>&1 || [ -n "$_MODELS_AGY" ] || MODELS_SILENT="${MODELS_SILENT:+$MODELS_SILENT and }agy"
       fi ;;
     *) printf 'review-skills: REVIEW_SKILLS_MODELS is auto or manual, not %s\n' "$REVIEW_SKILLS_MODELS" >&2; return 1 ;;
   esac
@@ -155,6 +163,13 @@ same_family() {
   local r f
   r="$(model_family "$1")"; shift; SAME_FAMILY=0
   for f; do [ "$(model_family "$f")" != "$r" ] || SAME_FAMILY=1; done
+}
+
+# refuter_why: what a same-family warning should add -- the backends that were set up but did
+# not answer, and the way round them. Empty when nothing better was missed.
+refuter_why() {
+  [ "${SAME_FAMILY:-0}" = 1 ] && [ -n "${MODELS_SILENT:-}" ] || return 0
+  printf ' -- %s did not answer; pin PR_REVIEW_REFUTER for a refuter of another family' "$MODELS_SILENT"
 }
 
 # _pick_refuter <preset> <finder...>: sets RESOLVED_REFUTER to the best reachable refuter row

@@ -216,7 +216,7 @@ case "$R_TRANSPORT" in
   *) die "unknown refuter transport in $REFUTER (agy|anthropic|ollama)" ;;
 esac
 same_family "$REFUTER" $FINDERS
-[ "$SAME_FAMILY" = 0 ] || warn "$R_LABEL is of the same model family as a finder ($LABELS): its refutations are not independent"
+[ "$SAME_FAMILY" = 0 ] || warn "$R_LABEL is of the same model family as a finder ($LABELS): its refutations are not independent$(refuter_why)"
 # Set by the intense preset: an unavailable refuter falls through to the other finder's model.
 CROSS="${PR_REVIEW_CROSS:+1}"
 if [ -n "$CROSS" ]; then

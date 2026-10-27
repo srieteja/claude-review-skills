@@ -32,7 +32,11 @@ echo "$*" >> "$STUB_LOG/curl"
 case "$*" in
   */v1/models*) printf '{"data":[%s]}' "$(printf '%s' "${STUB_OLLAMA_IDS-glm-5.3 glm-5.3-flash kimi-k3}" \
                   | tr ' ' '\n' | sed 's/.*/{"id":"&"}/' | paste -sd, -)" ;;
-  */v1/messages*) cat > /dev/null; printf '%s' "${STUB_OLLAMA_CODE:-200}" ;;
+  # STUB_OLLAMA_CODE: one status per call, the last repeating; 000 is no answer at all.
+  */v1/messages*) cat > /dev/null
+    n=$(( $(cat "$STUB_LOG/messages" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_LOG/messages"
+    set -- ${STUB_OLLAMA_CODE:-200}; [ "$n" -le $# ] || n=$#; eval "code=\${$n}"
+    printf '%s' "$code"; [ "$code" != 000 ] || exit 28 ;;
   *) exit 64 ;;
 esac
 STUB
@@ -46,6 +50,14 @@ res() { local p="$1"; shift
     bash -c '. "$1"; resolve_models "$2" || exit $?; echo "$RESOLVED_FINDERS | $RESOLVED_REFUTER | $SAME_FAMILY | $CLAUDE_OK"' \
     _ "$HERE/common.sh" "$p"; }
 is() { local want="$1"; shift; test "$(res "$@" 2>/dev/null)" = "$want"; }
+# why <preset> [VAR=val...]: what a same-family warning appends, after resolving.
+why() { local p="$1"; shift
+  env -i HOME="$SB/home" PATH="${WHY_PATH:-$SB/bin:$PATH}" STUB_LOG="$SB/log" REVIEW_SKILLS_CONFIG=/nonexistent \
+    REVIEW_SKILLS_CACHE="$CACHE" "$@" \
+    bash -c '. "$1"; resolve_models "$2" >/dev/null 2>&1 || exit $?; refuter_why' _ "$HERE/common.sh" "$p"; }
+# A PATH with no agy on it at all, the stubbed claude and curl kept.
+mkdir -p "$SB/noagy"; ln -s "$SB/bin/claude" "$SB/bin/curl" "$(command -v jq)" "$SB/noagy/"
+NOAGY="$SB/noagy:/usr/bin:/bin"
 fresh() { rm -rf "$CACHE" "$SB/log"; mkdir -p "$SB/log"; }
 calls() { if [ -f "$SB/log/$1" ]; then wc -l < "$SB/log/$1" | tr -d ' '; else echo 0; fi; }
 ALL=(STUB_CLAUDE=in STUB_AGY=in OLLAMA_API_KEY=k-oll)
@@ -93,6 +105,27 @@ fresh
 check "a key ollama refuses counts as no ollama" \
   is "anthropic:claude-opus-5-5@xhigh | agy:gemini-3.8-flash-high | 0 | 1" regular STUB_CLAUDE=in STUB_AGY=in OLLAMA_API_KEY=bad STUB_OLLAMA_CODE=401
 check "  and is not cached" test ! -e "$CACHE/ollama.models"
+fresh
+check "ollama silent once, then answering: glm still refutes" \
+  is "anthropic:claude-opus-5-5@xhigh | ollama:glm-5.3-flash | 0 | 1" regular STUB_CLAUDE=in OLLAMA_API_KEY=k-oll STUB_OLLAMA_CODE="000 200"
+fresh
+check "ollama silent twice: the run goes on with a sonnet refuter" \
+  is "anthropic:claude-opus-5-5@xhigh | anthropic:claude-sonnet-5-5 | 1 | 1" regular STUB_CLAUDE=in OLLAMA_API_KEY=k-oll STUB_OLLAMA_CODE=000
+fresh
+w="$(WHY_PATH="$NOAGY" why regular STUB_CLAUDE=in OLLAMA_API_KEY=k-oll STUB_OLLAMA_CODE=000)"
+check "  and the warning says ollama did not answer" sh -c 'printf "%s" "$1" | grep -q "ollama did not answer"' _ "$w"
+check "  and how to pin a refuter" sh -c 'printf "%s" "$1" | grep -q PR_REVIEW_REFUTER' _ "$w"
+fresh
+check "claude only, no agy installed: the warning blames no backend" \
+  test -z "$(WHY_PATH="$NOAGY" why regular STUB_CLAUDE=in)"
+fresh
+w="$(why regular STUB_CLAUDE=in)"
+check "agy installed but signed out: the warning names agy" sh -c 'printf "%s" "$1" | grep -q "agy did not answer"' _ "$w"
+fresh
+check "a pinned refuter is never blamed on a silent backend" \
+  test -z "$(why regular STUB_CLAUDE=in OLLAMA_API_KEY=k-oll STUB_OLLAMA_CODE=000 PR_REVIEW_REFUTER=anthropic:claude-z)"
+fresh
+check "a cross-family refuter needs no explaining" test -z "$(why regular "${ALL[@]}")"
 fresh
 check "ANTHROPIC_USE_API_KEY=1 with a key: claude is ready without a login check" \
   is "anthropic:claude-opus-5-5@xhigh | anthropic:claude-sonnet-5-5 | 1 | 1" regular ANTHROPIC_USE_API_KEY=1 ANTHROPIC_API_KEY=k

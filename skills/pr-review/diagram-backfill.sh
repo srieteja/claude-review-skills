@@ -18,7 +18,7 @@ for store in "$@"; do
     sha="$(jq -r '.headRefOid // ""' "$d/meta.json" 2>/dev/null || true)"
     model="$(sed -n 's/^Brief by \(.*\)\. Written.*/\1/p' "$ex" | head -1)"
     "$HERE/diagram.sh" --sha "$sha" --model "$model" "$ex" - 2>/dev/null || {
-      echo "diagram-backfill: diagram.sh can't run (node, or ./mermaid not installed)" >&2; exit 2; }
+      echo "diagram-backfill: diagram.sh can't run: install node, then review-skills install (or npm ci --prefix ./mermaid)" >&2; exit 2; }
     n=$((n + 1))
     j="${ex%-explainer.md}-diagram.json"
     tally="$tally$( [ -f "$j" ] && jq -r .status "$j" || echo none)"$'\n'

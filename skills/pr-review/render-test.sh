@@ -29,7 +29,7 @@ render() {  # render <fixture> <out> [gaps]
   jq -r -L "$HERE" -f "$HERE/report.jq" --arg pr 2382 --arg title "feat: a title" \
     --arg url "https://github.com/acme/widgets/pull/2382" \
     --arg sha 84cb6995e85dd5e6754997892b6736cdae877ae8 --arg om "opus-5.5/max + gemini-3.8-flash" \
-    --arg gm glm-5.3-flash --arg same 0 --arg burden evidence --arg gaps "${3:-}" --arg gap_notes "" "$1" > "$2" || true
+    --arg gm glm-5.3-flash --arg same 0 --arg burden "${BURDEN:-evidence}" --arg gaps "${3:-}" --arg gap_notes "" "$1" > "$2" || true
 }
 # ids <fixture> [select]: the ids of the findings matching a jq condition
 ids() { jq -r ".[] | select(${2:-true}) | .id" "$1"; }
@@ -55,6 +55,8 @@ check "the head, the PR, who found and who refuted, in one line" \
   has "$T/2382.md" '`84cb6995e85d` · [PR](https://github.com/acme/widgets/pull/2382) · found by opus-5.5/max + gemini-3.8-flash · refuted by glm-5.3-flash ([method](#method))'
 check "the method is a heading the line links to"  is "$(count "$T/2382.md" '^### Method$')" 1
 check "  and says what the refuter needed"        has "$T/2382.md" "A refutation needed quoted counter-evidence"
+BURDEN=strict render "$FX/merged-2382.json" "$T/2382-strict.md"
+check "  under strict, UNVERIFIABLE stays for state outside the repo" has "$T/2382-strict.md" "UNVERIFIABLE only when the outcome depends on state outside the repository"
 
 # No-loss: every field of every finding that survived is in the report, verbatim. The
 # refuter's reasoning and evidence sit inside a <details>, one click away, never outside.

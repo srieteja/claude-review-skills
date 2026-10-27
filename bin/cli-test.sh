@@ -21,6 +21,12 @@ cat > "$SB/stub/agy" <<'STUB'
 #!/usr/bin/env bash
 echo "not signed in" >&2; exit 1
 STUB
+cat > "$SB/stub/gh" <<'STUB'
+#!/usr/bin/env bash
+[ "$1 $2" = "auth status" ] || exit 64
+[ -z "${STUB_GH_ERR:-}" ] || { printf 'github.com\n  X Failed to log in to github.com account alice (keyring)\n  - Active account: true\n  - %s\n  - To re-authenticate, run: gh auth login -h github.com\n' "$STUB_GH_ERR" >&2; exit 1; }
+echo "Logged in to github.com account alice"
+STUB
 # npm: logs its arguments, so install's mermaid step is seen without touching the repo.
 cat > "$SB/stub/npm" <<STUB
 #!/usr/bin/env bash
@@ -94,6 +100,9 @@ check "reports whether diagrams are checked" sh -c 'printf "%s" "$1" | grep -qE 
 check "shows what each preset resolves to" \
   sh -c 'printf "%s" "$1" | grep -q "^ *regular" && printf "%s" "$1" | grep -q "^ *intense"' _ "$out"
 chmod 644 "$SB/cfg/config.env"
+out="$(cli STUB_GH_ERR="The token in keyring is invalid." -- doctor 2>&1)" || true
+check "a gh login problem is quoted from gh" sh -c 'printf "%s" "$1" | grep -q "token in keyring is invalid"' _ "$out"
+check "  with GH_TOKEN as a way in" sh -c 'printf "%s" "$1" | grep -q GH_TOKEN' _ "$out"
 check "a config readable by others fails" sh -c '! "$@" -- doctor' _ "$cli"
 chmod 600 "$SB/cfg/config.env"
 mkdir -p "$SB/nojq"

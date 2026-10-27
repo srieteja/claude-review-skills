@@ -29,7 +29,9 @@ in, `OLLAMA_API_KEY` that ollama.com accepts — ranked in `lib/models.tsv`, wit
 of a different family from the finder whenever one is reachable. Model lists are cached a
 day. `REVIEW_SKILLS_MODELS=manual` skips the probes and takes the first rows;
 `PR_REVIEW_FINDERS` / `PR_REVIEW_REFUTER` pin either role. A same-family refuter is flagged
-in the report. Without claude, the brief is skipped.
+in the report, and the warning names agy or ollama when one was set up but did not answer
+(each is asked twice). A run never fails for want of a second family. Without claude, the
+brief is skipped.
 
 ### When Opus is unavailable
 
@@ -283,6 +285,19 @@ AUTOFIX_DRY_RUN=1 ~/.claude/skills/pr-review/autofix.sh <N> <sha> <repo-dir> ~/.
 
 ## Posting
 
+### What touches GitHub
+
+| Stage | Call | Writes? |
+|---|---|---|
+| 0 | `gh pr view`, `gh pr diff` | no |
+| report | `gh repo view`; `inline.py` runs `gh api repos/…/pulls/N/files` every run | no |
+| 4 | `gh api …/reviews` (`--inline`) or `gh pr comment` | **only with `--post`**, and it asks first unless `--yes` |
+| 5 (autofix) | `git push`, `gh pr create`, `gh pr edit --add-reviewer` | **only for authors in `PR_REVIEW_FIX_AUTHORS`** (empty by default); `--no-fix` skips it |
+
+Without `--post`, and with `PR_REVIEW_FIX_AUTHORS` empty or `--no-fix`, a run only reads.
+
+### Posting a report
+
 Never post unprompted. The file always exists first; posting is a separate decision.
 
 ```bash
@@ -314,8 +329,8 @@ sorted first:
 | Bucket | When | Where it lands |
 |---|---|---|
 | inline | line falls inside a right-side hunk | anchored exactly there |
-| nearest | file is in the diff, line is not | nearest in-hunk line, **with the true location stated in the body** |
-| body | file not in the diff, or verdict is `ERROR` | the review's top-level body |
+| nearest | file is in the diff, line is not, but a hunk is within 20 lines (`CLAMP_LIMIT` in `inline.py`) | nearest in-hunk line, **with the true location stated in the body** |
+| body | file not in the diff, no hunk within 20 lines, or verdict is `ERROR` | the review's top-level body |
 
 Never let a line number move silently — a clamped anchor with no note is what makes a reader
 distrust the whole report. `ERROR` verdicts never go inline: an unchecked claim anchored to
