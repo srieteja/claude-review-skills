@@ -100,7 +100,8 @@ echo stale > "$D/pr5-diagram.mmd"; echo '{}' > "$D/pr5-diagram.json"
 run --sha s --model m --repair "$D/pr5-explainer.md" "$FX/diagram-grounding.diff"
 check "a brief with no mermaid block leaves no diagram files, stale ones removed" \
   bash -c "! ls '$D'/pr5-diagram.* 2>/dev/null"
-D="$T/s/alice/widgets/6"; explainer "$D" 6 "$GOOD"; sed -i '' '/^```$/d' "$D/pr6-explainer.md"
+D="$T/s/alice/widgets/6"; explainer "$D" 6 "$GOOD"
+grep -v '^```$' "$D/pr6-explainer.md" > "$T/unclosed.md"; mv "$T/unclosed.md" "$D/pr6-explainer.md"
 run --sha s --model m "$D/pr6-explainer.md" "$FX/diagram-grounding.diff"
 check "an unclosed fence is no diagram" bash -c "! ls '$D'/pr6-diagram.* 2>/dev/null"
 
@@ -125,9 +126,8 @@ check "the model comes from the explainer's byline" is "$(meta "$T/s/b/alice/wid
 check "a broken one is recorded invalid, not repaired" is "$(meta "$T/s/b/alice/widgets/11/pr11-diagram.json" .status)" invalid
 check "a run with no explainer is skipped" bash -c "! ls '$T/s/b/bob/widgets/12'/pr12-diagram.* 2>/dev/null"
 check "backfill makes no model call" is "$(calls)" 0
-touch -t 202001010000 "$T"/s/*/*/*/*/pr*-diagram.*
-before="$(ls -lT "$T"/s/*/*/*/*/pr*-diagram.* | awk '{print $6,$7,$8,$9}')"
+touch -t 202001010000 "$T"/s/*/*/*/*/pr*-diagram.*; touch -t 202001010001 "$T/ref"
 backfill
-check "a second run rewrites nothing" is "$(ls -lT "$T"/s/*/*/*/*/pr*-diagram.* | awk '{print $6,$7,$8,$9}')" "$before"
+check "a second run rewrites nothing" is "$(find "$T/s" -name 'pr*-diagram.*' -newer "$T/ref")" ""
 
 [ "$fail" -eq 0 ] && echo "all passed" || { echo "FAILED"; cat "$T/err" >&2; exit 1; }
