@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The learning engine: what you did with each decision peer-review froze, distilled into rules
-the body writer follows. Plan: reviews/plans/learning-engine.md (v1-v3).
+the body writer follows.
 
   capture   record prepare|ship|rerun  -- passive, at three points in peer-review.sh
   metrics   stats                      -- edit ratio, agreement, keep rate, rerun rate, per arm
@@ -37,7 +37,6 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 HOME = Path.home()
 LEGACY_REPO = "at_client_sdk"   # review_index.LEGACY_REPO: stores from before keys carried a repo
-SEED_PATH = HOME / ".claude/projects/-Users-srie-work-skills/memory/pr-review-posting-style.md"
 
 HALF_LIFE_DAYS = 60
 ACTIVE_SUPPORTS = 2      # one edit isn't a preference
@@ -530,11 +529,24 @@ def delete_rule(rid, now=None):
     return save_profile(p, "delete %s" % rid, now)
 
 
+def seed_path():
+    """The Markdown file import_seed pins as a writer rule, or None for no seed:
+    PR_REVIEW_LEARN_SEED, else posting-style.md beside config.env if one is there."""
+    if os.environ.get("PR_REVIEW_LEARN_SEED"):
+        return Path(os.environ["PR_REVIEW_LEARN_SEED"])
+    conf = Path(os.environ.get("XDG_CONFIG_HOME") or Path(os.environ.get("HOME", HOME)) / ".config")
+    p = conf / "review-skills" / "posting-style.md"
+    return p if p.is_file() else None
+
+
 @_locked
 def import_seed(path=None, now=None):
     """One-way import of a Claude memory file as a pinned writer rule, once. Keyed by source, so
     an edited or deleted seed is never re-imported. ~/.claude/projects is never written."""
-    path = Path(path or os.environ.get("PR_REVIEW_LEARN_SEED") or SEED_PATH)
+    path = path or seed_path()
+    if not path:
+        return None
+    path = Path(path)
     source = "memory:" + path.stem
     p = load_profile()
     if source in p["imported"] or any(r.get("source") == source for r in p["rules"]):

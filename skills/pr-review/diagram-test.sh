@@ -50,7 +50,7 @@ explainer() {   # explainer <dir> <pr> <block>: a brief with prose around one me
 run() { PATH="$T/stub:$PATH" "$HERE/diagram.sh" "$@" 2>>"$T/err" && rc=0 || rc=$?; }
 
 echo "diagram.sh -- a valid diagram"
-D="$T/s/gkc/widgets/1"; explainer "$D" 1 "$GOOD"; cp "$D/pr1-explainer.md" "$T/before.md"
+D="$T/s/alice/widgets/1"; explainer "$D" 1 "$GOOD"; cp "$D/pr1-explainer.md" "$T/before.md"
 run --sha abc123 --model m1 --repair "$D/pr1-explainer.md" "$FX/diagram-grounding.diff"
 check "the block lands in pr<N>-diagram.mmd" is "$(cat "$D/pr1-diagram.mmd")" "$GOOD"
 check "status ok, no error" is "$(meta "$D/pr1-diagram.json" '[.status, .error] | @tsv')" "ok	"
@@ -60,7 +60,7 @@ check "a valid diagram costs no call" is "$(calls)" 0
 check "the explainer is untouched" cmp -s "$D/pr1-explainer.md" "$T/before.md"
 
 echo "diagram.sh -- a broken diagram, no repair asked"
-D="$T/s/gkc/widgets/2"; explainer "$D" 2 "$(cat "$FX/diagram-subgraph-unquoted.mmd")"
+D="$T/s/alice/widgets/2"; explainer "$D" 2 "$(cat "$FX/diagram-subgraph-unquoted.mmd")"
 run --sha s --model m "$D/pr2-explainer.md" "$FX/diagram-grounding.diff"
 check "status invalid with mermaid's error" is "$(meta "$D/pr2-diagram.json" '.status')" invalid
 check "the error is mermaid's own" grep -q 'Lexical error' "$D/pr2-diagram.json"
@@ -68,7 +68,7 @@ check "no .mmd for an invalid diagram: the page shows the explainer's raw block"
 check "no repair without --repair" is "$(calls)" 0
 
 echo "diagram.sh -- one repair that parses"
-D="$T/s/gkc/widgets/3"; explainer "$D" 3 "$(cat "$FX/diagram-subgraph-unquoted.mmd")"
+D="$T/s/alice/widgets/3"; explainer "$D" 3 "$(cat "$FX/diagram-subgraph-unquoted.mmd")"
 run --sha s --model claude-sonnet-5-5 --repair "$D/pr3-explainer.md" "$FX/diagram-grounding.diff"
 check "exactly one repair call" is "$(calls)" 1
 check "status repaired" is "$(meta "$D/pr3-diagram.json" '.status')" repaired
@@ -84,7 +84,7 @@ check "the repair prompt carries no diff body" bash -c "! grep -q 'runZonedGuard
 
 echo "diagram.sh -- a repair that still fails, and one that errors"
 rm -f "$STUB_LOG"/*
-D="$T/s/gkc/widgets/4"; explainer "$D" 4 "$(cat "$FX/diagram-subgraph-unquoted.mmd")"; cp "$D/pr4-explainer.md" "$T/before.md"
+D="$T/s/alice/widgets/4"; explainer "$D" 4 "$(cat "$FX/diagram-subgraph-unquoted.mmd")"; cp "$D/pr4-explainer.md" "$T/before.md"
 STUB_REPAIR=bad run --sha s --model m --repair "$D/pr4-explainer.md" "$FX/diagram-grounding.diff"
 check "still one call, never a second" is "$(calls)" 1
 check "status invalid" is "$(meta "$D/pr4-diagram.json" '.status')" invalid
@@ -95,33 +95,33 @@ STUB_REPAIR=fail run --sha s --model m --repair "$D/pr4-explainer.md" "$FX/diagr
 check "an erroring repair call is invalid too, exit 0" is "$(meta "$D/pr4-diagram.json" '.status') $rc" "invalid 0"
 
 echo "diagram.sh -- no diagram at all"
-D="$T/s/gkc/widgets/5"; mkdir -p "$D"; printf '# PR\n\n```dart\nvoid f() {}\n```\n' > "$D/pr5-explainer.md"
+D="$T/s/alice/widgets/5"; mkdir -p "$D"; printf '# PR\n\n```dart\nvoid f() {}\n```\n' > "$D/pr5-explainer.md"
 echo stale > "$D/pr5-diagram.mmd"; echo '{}' > "$D/pr5-diagram.json"
 run --sha s --model m --repair "$D/pr5-explainer.md" "$FX/diagram-grounding.diff"
 check "a brief with no mermaid block leaves no diagram files, stale ones removed" \
   bash -c "! ls '$D'/pr5-diagram.* 2>/dev/null"
-D="$T/s/gkc/widgets/6"; explainer "$D" 6 "$GOOD"; sed -i '' '/^```$/d' "$D/pr6-explainer.md"
+D="$T/s/alice/widgets/6"; explainer "$D" 6 "$GOOD"; sed -i '' '/^```$/d' "$D/pr6-explainer.md"
 run --sha s --model m "$D/pr6-explainer.md" "$FX/diagram-grounding.diff"
 check "an unclosed fence is no diagram" bash -c "! ls '$D'/pr6-diagram.* 2>/dev/null"
 
 echo "diagram.sh -- no diff: grounding not checked"
-D="$T/s/gkc/widgets/7"; explainer "$D" 7 "$GOOD"
+D="$T/s/alice/widgets/7"; explainer "$D" 7 "$GOOD"
 run --sha s --model m "$D/pr7-explainer.md" -
 check "ungrounded is null, not empty" is "$(meta "$D/pr7-diagram.json" '.ungrounded')" null
 
 echo "diagram-backfill.sh -- every store, no model, idempotent"
 rm -rf "$T/s" "$STUB_LOG"; mkdir -p "$STUB_LOG"
 for s in a b; do
-  explainer "$T/s/$s/gkc/widgets/10" 10 "$GOOD"
-  printf '{"headRefOid":"sha%s"}\n' "$s" > "$T/s/$s/gkc/widgets/10/meta.json"
+  explainer "$T/s/$s/alice/widgets/10" 10 "$GOOD"
+  printf '{"headRefOid":"sha%s"}\n' "$s" > "$T/s/$s/alice/widgets/10/meta.json"
 done
 explainer "$T/s/b/alice/widgets/11" 11 "$(cat "$FX/diagram-subgraph-unquoted.mmd")"
 mkdir -p "$T/s/b/bob/widgets/12"; echo "# no explainer" > "$T/s/b/bob/widgets/12/pr12-review.md"
 backfill() { PATH="$T/stub:$PATH" "$HERE/diagram-backfill.sh" "$T/s/a" "$T/s/b" >"$T/bf.out" 2>&1 || true; }
 backfill
-check "both stores' diagrams written" test -s "$T/s/a/gkc/widgets/10/pr10-diagram.mmd" -a -s "$T/s/b/gkc/widgets/10/pr10-diagram.mmd"
-check "the head comes from meta.json" is "$(meta "$T/s/b/gkc/widgets/10/pr10-diagram.json" .sha)" shab
-check "the model comes from the explainer's byline" is "$(meta "$T/s/b/gkc/widgets/10/pr10-diagram.json" .model)" claude-sonnet-5-5
+check "both stores' diagrams written" test -s "$T/s/a/alice/widgets/10/pr10-diagram.mmd" -a -s "$T/s/b/alice/widgets/10/pr10-diagram.mmd"
+check "the head comes from meta.json" is "$(meta "$T/s/b/alice/widgets/10/pr10-diagram.json" .sha)" shab
+check "the model comes from the explainer's byline" is "$(meta "$T/s/b/alice/widgets/10/pr10-diagram.json" .model)" claude-sonnet-5-5
 check "a broken one is recorded invalid, not repaired" is "$(meta "$T/s/b/alice/widgets/11/pr11-diagram.json" .status)" invalid
 check "a run with no explainer is skipped" bash -c "! ls '$T/s/b/bob/widgets/12'/pr12-diagram.* 2>/dev/null"
 check "backfill makes no model call" is "$(calls)" 0

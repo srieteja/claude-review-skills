@@ -16,6 +16,10 @@ jobs:
       - name: shellcheck (errors)
         run: |
           grep -rlE '^#!.*(ba)?sh|^# shellcheck shell=' bin lib skills | sort -u | xargs shellcheck -S error
+      - name: no personal paths or handles
+        run: |
+          ! git grep -nE '/Users/|-Users-|srieteja|\bgkc\b' -- . ':!.github/workflows/ci.yml' \
+            | grep -vE '/Users/someone/|github\.com/srieteja/claude-review-skills'
 
   test:
     strategy:

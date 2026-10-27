@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import review_learn as rl  # noqa: E402
 
 SHA = "a" * 40
 NOW = datetime(2026, 10, 24, 12, 0, 0, tzinfo=timezone.utc)
-URL = "https://github.com/atsign-foundation/%s/pull/%s"
+URL = "https://github.com/acme/%s/pull/%s"
 
 F_A = {"id": "anthropic.t01-F1", "file": "lib/a.dart", "line": 10, "severity": "medium",
        "claim": "a breaks", "title": "a breaks", "v": {"verdict": "CONFIRMED"}}
@@ -221,7 +222,7 @@ class TestShip(Base):
         self.assertEqual(self.events(), [])
 
     def test_repo_from_the_report_when_there_is_no_meta(self):
-        d = self.review(pr=2373, repo="at_client_sdk", author="gkc", decision="approve",
+        d = self.review(pr=2373, repo="at_client_sdk", author="alice", decision="approve",
                         findings=(), text="clean\n", meta=False, store=self.regular)
         e = self.ship(d)
         self.assertEqual((e["key"], e["engine"]), ("at_client_sdk#2373", "regular"))
@@ -558,6 +559,27 @@ class TestSeed(Profile):
         rl.import_seed()
         self.assertEqual((rl.load_profile()["version"], rl.load_profile()["rules"]), (v, []))
 
+    def test_no_seed_unless_configured(self):
+        """Nobody else has the author's Claude memory: an unset PR_REVIEW_LEARN_SEED imports
+        nothing, whatever lies under ~/.claude."""
+        home = self.tmp / "home"
+        (home / ".claude/projects/-home-x-work-skills/memory").mkdir(parents=True)
+        (home / ".claude/projects/-home-x-work-skills/memory/pr-review-posting-style.md").write_text(SEED)
+        os.environ.pop("PR_REVIEW_LEARN_SEED")
+        with mock.patch.dict(os.environ, {"HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config")}), \
+                mock.patch.object(rl, "HOME", home):
+            self.assertIsNone(rl.import_seed())
+        self.assertEqual(rl.load_profile()["rules"], [])
+
+    def test_posting_style_beside_config_is_the_default_seed(self):
+        conf = self.tmp / "config"
+        (conf / "review-skills").mkdir(parents=True)
+        (conf / "review-skills/posting-style.md").write_text(SEED)
+        os.environ.pop("PR_REVIEW_LEARN_SEED")
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(conf)}):
+            rl.import_seed()
+        self.assertEqual(rl.load_profile()["rules"][0]["source"], "memory:posting-style")
+
     def test_missing_seed_file_is_fine(self):
         self.seed.unlink()
         rl.import_seed()
@@ -616,9 +638,9 @@ class TestWriteBody(Base):
         self.assertEqual(info["writer"], "template")
 
     def test_bare_at_user_is_quieted(self):
-        out = "Requesting changes at `%s` @gkc _@bob_ me@x.io.\n- (`lib/a.dart:10`) (`lib/b.dart:20`)\n" % SHA[:12]
+        out = "Requesting changes at `%s` @carol _@bob_ me@x.io.\n- (`lib/a.dart:10`) (`lib/b.dart:20`)\n" % SHA[:12]
         text, _ = self.write(TEMPLATE, self.FINDINGS, [], "treatment", lambda p: out)
-        self.assertIn("@⁠gkc", text)
+        self.assertIn("@⁠carol", text)
         self.assertIn("_@⁠bob_", text)
         self.assertIn("me@x.io", text)
         self.assertEqual(rl.quiet(rl.quiet("@a")), rl.quiet("@a"))
