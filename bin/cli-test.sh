@@ -38,7 +38,7 @@ exec env -i HOME="$SB/home" PATH="$SB/stub:$PATH" TMPDIR="${TMPDIR:-/tmp}" \\
 EOF
 chmod +x "$SB/cli"; cli="$SB/cli"
 cli() { "$cli" "$@"; }
-SKILLS="delegate intense-review ollama-agents peer-review pr-review"
+SKILLS="intense-review peer-review pr-review"
 
 echo "install"
 out="$(cli -- install 2>&1)" && rc=0 || rc=$?
@@ -56,11 +56,11 @@ check "a second install exits 0" cli -- install
 check "a failed npm ci still installs" cli STUB_NPM_RC=1 -- install
 check "  and says diagrams are off" sh -c '"$@" -- install 2>&1 | grep -q "diagrams off"' _ "$cli" STUB_NPM_RC=1
 check "  and keeps the user's config" grep -qx 'OLLAMA_API_KEY=mine' "$SB/cfg/config.env"
-rm "$SB/skills/delegate"; mkdir "$SB/skills/delegate"; : > "$SB/skills/delegate/mine"
+rm "$SB/skills/intense-review"; mkdir "$SB/skills/intense-review"; : > "$SB/skills/intense-review/mine"
 out="$(cli -- install 2>&1)" && rc=0 || rc=$?
 check "a directory already in the way fails the install" test "$rc" -ne 0
-check "  is named" sh -c 'printf "%s" "$1" | grep -q "skills/delegate"' _ "$out"
-check "  and left as it was" test -f "$SB/skills/delegate/mine"
+check "  is named" sh -c 'printf "%s" "$1" | grep -q "skills/intense-review"' _ "$out"
+check "  and left as it was" test -f "$SB/skills/intense-review/mine"
 check "  the other skills still link" test -L "$SB/skills/pr-review"
 rm -rf "$SB/skills" "$SB/cfg"
 mkdir -p "$SB/bin"; ln -s "$CLI" "$SB/bin/review-skills"
@@ -110,7 +110,7 @@ fi
 
 echo "test"
 out="$(cli -- test --list)"
-check "lists every suite" sh -c 'for t in lib/models-test.sh skills/pr-review/offline-test.sh skills/delegate/offline-test.sh bin/cli-test.sh; do printf "%s" "$1" | grep -qx "$t" || exit 1; done' _ "$out"
+check "lists every suite" sh -c 'for t in lib/models-test.sh skills/pr-review/offline-test.sh skills/peer-review/e2e-test.sh bin/cli-test.sh; do printf "%s" "$1" | grep -qx "$t" || exit 1; done' _ "$out"
 check "  but not the live selftests" sh -c '! printf "%s" "$1" | grep -q selftest' _ "$out"
 
 echo "usage"

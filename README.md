@@ -9,8 +9,6 @@ Claude Code skills for reviewing GitHub PRs with more than one model family. Fin
 | `pr-review` | `/pr-review 123` | A report of the findings that survived, plus a plain-language brief of the PR for you |
 | `intense-review` | `/intense-review 123` | The same with two finders at top effort, a third-family refuter under an evidence burden, and no dollar cap |
 | `peer-review` | `/peer-review 123` | A decision: **approve**, **request changes**, or a **fix PR** stacked on the author's. It posts only after you check it |
-| `delegate` | `/delegate` | An approved plan implemented by antigravity (agy) in a throwaway worktree, returned as a patch |
-| `ollama-agents` | `/ollama-agents` | The same as `delegate`, routed to ollama.com models. Adds `--map` for one extraction run over many files |
 
 ```mermaid
 flowchart LR
@@ -123,7 +121,7 @@ Each skill's `SKILL.md` lists its own knobs. Each `DESIGN.md` explains why the p
 ## Development
 
 - **Tests.** `bin/review-skills test` runs the offline suites on macOS and Linux. CI runs them plus `shellcheck -S error`.
-- **Selftests.** `selftest.sh` and `bakeoff.sh` call real models and cost money. Neither is part of `test`.
+- **Selftests.** `skills/pr-review/selftest.sh` calls real models and costs money. It is not part of `test`.
 - **Portability.** Scripts target bash 3.2 (the macOS system bash), BSD and GNU userlands, and mawk.
 - **Contributing and security.** See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). The skills feed untrusted PR content to agents, so read the threat model before you widen any agent's tools.
 

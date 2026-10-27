@@ -14,7 +14,7 @@ bin/review-skills test                     # every offline suite: stubbed models
 
 ## Live tests (maintainers)
 
-`skills/pr-review/selftest.sh`, `skills/ollama-agents/selftest.sh` and `bakeoff.sh` call real models and cost money. `pr-review/selftest.sh` is pinned to a public `atsign-foundation/at_client_sdk` PR. None of them is part of `bin/review-skills test`.
+`skills/pr-review/selftest.sh` calls real models and costs money. It is pinned to a public `atsign-foundation/at_client_sdk` PR and is not part of `bin/review-skills test`.
 
 ## Design changes
 

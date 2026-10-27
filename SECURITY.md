@@ -13,7 +13,6 @@ Every review feeds **untrusted input** to LLM agents: the PR's diff, its descrip
 | Finders (`pr-review.sh`) | read the PR-head clone, `git diff` / `git log`, write their findings file | edit files, run other commands, reach the web, spawn agents |
 | Refuter (`refute`) | read the PR-head clone | Bash, write, edit, web, agents |
 | Fix implementer (`autofix.sh`) | read and edit the clone, `dart pub get` / `analyze` / `test` | other commands; it never gets `gh` or a push |
-| `delegate` / `ollama-agents` | anything inside a throwaway worktree (`--dangerously-skip-permissions`) | change the source repo: a before/after snapshot of its refs, HEAD and stash fails the run |
 
 - **Nothing posts unseen.** `peer-review` freezes the exact text in `prepare`, and only `--ship` posts it, pinned to the reviewed commit. A moved PR head is refused as stale.
 - **Fix PRs are opt-in.** They open only for logins in `PR_REVIEW_FIX_AUTHORS`, which is empty by default. The scripts push and call `gh`, not the model.

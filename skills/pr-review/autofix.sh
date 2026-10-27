@@ -345,7 +345,7 @@ else
     # One task, one patch: findings from a single review land as one commit, not a scramble
     # of per-finding runs that would then need reconciling against each other. The preamble is
     # load-bearing: a print-mode model not told it is unattended ends on "shall I proceed?"
-    # with nothing edited (seen twice under agy -- delegate/SKILL.md, design notes).
+    # with nothing edited (seen twice under agy).
     printf '%s\n' "$FINDINGS" > "$WORK/findings.json"
     {
       echo "You are running unattended: no one will answer a question or approve a plan, so"
