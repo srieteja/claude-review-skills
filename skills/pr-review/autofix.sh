@@ -448,8 +448,8 @@ while IFS= read -r pkg; do
       || { warn "dart analyze: the patch adds issues to $pkg -- no PR (see $LOG)"; exit 1; }
   else
     say "testing $pkg"
-    # --concurrency=1, as the atsign repos' CI runs them: test files share on-disk state
-    # (at_secondary_server's unit_test_storage), and run in parallel they race on it.
+    # --concurrency=1: test files that share on-disk state race when run in parallel, and a
+    # flaky gate would refuse a correct fix. Slower, never wrong.
     ( cd "$TREE/$pkg" && dart pub get && dart test --concurrency=1 ) </dev/null >"$LOG" 2>&1 \
       || { warn "dart test failed in $pkg -- no PR (see $LOG)"; exit 1; }
   fi
