@@ -19,3 +19,5 @@ bin/review-skills test                     # every offline suite: stubbed models
 ## Design changes
 
 Each skill's `DESIGN.md` records why the pipeline is built the way it is. If your change contradicts it, update the doc in the same PR.
+
+Changing an item in [CONTRACT.md](CONTRACT.md) is a breaking change for wrappers. Update the `contract` block and say what wrappers must do in the commit message.

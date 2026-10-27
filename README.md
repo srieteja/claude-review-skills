@@ -86,6 +86,8 @@ cd ~/src/the-repo-under-review
 
 It reads PR 123 of that clone's GitHub remote and writes the report to the store (see below). Nothing is posted without `--post`.
 
+If you build on top of these skills, for example a scheduler or a dashboard, wrap them rather than forking them. [CONTRACT.md](CONTRACT.md) lists the commands, output lines, store files and Python API you can rely on, and CI tests each item.
+
 ## Where files go
 
 | What | Default | Moved by |
