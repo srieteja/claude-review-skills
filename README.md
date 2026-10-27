@@ -1,5 +1,7 @@
 # review-skills
 
+[![ci](https://github.com/srieteja/claude-review-skills/actions/workflows/ci.yml/badge.svg)](https://github.com/srieteja/claude-review-skills/actions/workflows/ci.yml)
+
 Claude Code skills for reviewing GitHub PRs with more than one model family. Finders look for defects. A refuter from a different model family then tries to disprove each one against the PR-head source. Only findings that survive the refuter are reported.
 
 | Skill | Say | What you get |
@@ -113,7 +115,7 @@ Each skill's `SKILL.md` lists its own knobs. Each `DESIGN.md` explains why the p
 
 | Command | Does |
 |---|---|
-| `review-skills install` | links the skills; creates `config.env` from the template if there is none |
+| `review-skills install` | links the skills; creates `config.env` from the template if there is none; installs mermaid with npm for the diagram check |
 | `review-skills doctor` | checks tools, `gh` login, config permissions, which keys are set (never their values), backends, and resolved models |
 | `review-skills models [regular\|intense] [--refresh]` | shows the models a review would run; `--refresh` asks every backend again |
 | `review-skills test [--list]` | runs every offline suite, with stubbed models: nothing is spent and GitHub is never touched |
@@ -123,6 +125,7 @@ Each skill's `SKILL.md` lists its own knobs. Each `DESIGN.md` explains why the p
 - **Tests.** `bin/review-skills test` runs the offline suites on macOS and Linux. CI runs them plus `shellcheck -S error`.
 - **Selftests.** `selftest.sh` and `bakeoff.sh` call real models and cost money. Neither is part of `test`.
 - **Portability.** Scripts target bash 3.2 (the macOS system bash), BSD and GNU userlands, and mawk.
+- **Contributing and security.** See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). The skills feed untrusted PR content to agents, so read the threat model before you widen any agent's tools.
 
 ## License
 
