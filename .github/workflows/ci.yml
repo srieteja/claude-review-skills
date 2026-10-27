@@ -31,6 +31,13 @@ jobs:
       - name: tools (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y jq
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: skills/pr-review/mermaid/package-lock.json
+      - name: mermaid, for the diagram suites
+        run: npm ci --prefix skills/pr-review/mermaid --no-audit --no-fund
       - name: git identity for the fixture repos
         run: |
           git config --global user.name ci

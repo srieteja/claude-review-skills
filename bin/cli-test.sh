@@ -21,6 +21,11 @@ cat > "$SB/stub/agy" <<'STUB'
 #!/usr/bin/env bash
 echo "not signed in" >&2; exit 1
 STUB
+# npm: logs its arguments, so install's mermaid step is seen without touching the repo.
+cat > "$SB/stub/npm" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$SB/npm.log"; exit \${STUB_NPM_RC:-0}
+STUB
 chmod +x "$SB/stub/"*
 # cli [VAR=val...] -- <args>: the CLI in a clean env with a scratch HOME, config and cache.
 cat > "$SB/cli" <<EOF
@@ -46,7 +51,10 @@ check "  readable by its owner only" sh -c 'test -f "$1" && test -z "$(find "$1"
 check "  an installed entry point finds lib/" \
   sh -c '"$1" --help 2>&1 | grep -q "usage: pr-review.sh"' _ "$SB/skills/pr-review/pr-review.sh"
 echo 'OLLAMA_API_KEY=mine' > "$SB/cfg/config.env"
+check "  installs mermaid for the diagram check" grep -qx "ci --prefix $REPO/skills/pr-review/mermaid --no-audit --no-fund" "$SB/npm.log"
 check "a second install exits 0" cli -- install
+check "a failed npm ci still installs" cli STUB_NPM_RC=1 -- install
+check "  and says diagrams are off" sh -c '"$@" -- install 2>&1 | grep -q "diagrams off"' _ "$cli" STUB_NPM_RC=1
 check "  and keeps the user's config" grep -qx 'OLLAMA_API_KEY=mine' "$SB/cfg/config.env"
 rm "$SB/skills/delegate"; mkdir "$SB/skills/delegate"; : > "$SB/skills/delegate/mine"
 out="$(cli -- install 2>&1)" && rc=0 || rc=$?
@@ -56,7 +64,7 @@ check "  and left as it was" test -f "$SB/skills/delegate/mine"
 check "  the other skills still link" test -L "$SB/skills/pr-review"
 rm -rf "$SB/skills" "$SB/cfg"
 mkdir -p "$SB/bin"; ln -s "$CLI" "$SB/bin/review-skills"
-env -i HOME="$SB/home" PATH="$PATH" REVIEW_SKILLS_CONFIG="$SB/cfg/config.env" \
+env -i HOME="$SB/home" PATH="$SB/stub:$PATH" REVIEW_SKILLS_CONFIG="$SB/cfg/config.env" \
   CLAUDE_SKILLS_DIR="$SB/skills" bash "$SB/bin/review-skills" install >/dev/null 2>&1 || true
 check "run through a symlink, it still links the repo's skills" \
   test "$(readlink "$SB/skills/pr-review")" = "$REPO/skills/pr-review"
@@ -82,6 +90,7 @@ check "says a key is set" sh -c 'printf "%s" "$1" | grep -q "OLLAMA_API_KEY.*set
 check "  never prints it" sh -c '! printf "%s" "$1" | grep -q sekrit' _ "$out"
 check "reports claude signed in, agy not" \
   sh -c 'printf "%s" "$1" | grep -q "claude.*signed in" && printf "%s" "$1" | grep -q "agy.*not signed in"' _ "$out"
+check "reports whether diagrams are checked" sh -c 'printf "%s" "$1" | grep -qE "diagrams( off)?:"' _ "$out"
 check "shows what each preset resolves to" \
   sh -c 'printf "%s" "$1" | grep -q "^ *regular" && printf "%s" "$1" | grep -q "^ *intense"' _ "$out"
 chmod 644 "$SB/cfg/config.env"

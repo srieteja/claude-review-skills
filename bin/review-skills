@@ -15,8 +15,9 @@ usage() {
   cat <<EOF
 usage: review-skills <command>
 
-  install          link every skill into \${CLAUDE_SKILLS_DIR:-~/.claude/skills} and create
-                   $(config_file) from the template if there is none
+  install          link every skill into \${CLAUDE_SKILLS_DIR:-~/.claude/skills}, create
+                   $(config_file) from the template if there is none, and
+                   install mermaid (npm) for the brief's diagram check
   doctor           tools, GitHub login, config, backends and the models each preset resolves to
   models [regular|intense] [--refresh]
                    the finders and refuter a review would run; --refresh asks every backend afresh
@@ -28,6 +29,11 @@ say()  { printf '%s\n' "$*"; }
 good() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 poor() { printf '  \033[31m✗\033[0m %s\n' "$*"; }
 note() { printf '  \033[33m-\033[0m %s\n' "$*"; }
+
+# The brief's diagram is parsed by mermaid itself (skills/pr-review/mermaid); without node or
+# its node_modules, diagram.sh skips the check rather than failing the review.
+MERMAID="$REPO/skills/pr-review/mermaid"
+DIAGRAMS_OFF="diagrams off: the brief's diagram goes unchecked -- install node, then review-skills install"
 
 cmd_install() {
   local dest="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}" cfg s name rc=0
@@ -50,6 +56,9 @@ cmd_install() {
     (umask 077; cp "$REPO/config.example.env" "$cfg")
     good "config: $cfg (from the template -- add your keys there)"
   fi
+  if command -v npm >/dev/null 2>&1 && npm ci --prefix "$MERMAID" --no-audit --no-fund >/dev/null 2>&1; then
+    good "diagrams: mermaid installed"
+  else note "$DIAGRAMS_OFF"; fi
   return $rc
 }
 
@@ -107,6 +116,10 @@ cmd_doctor() {
   if [ -z "${OLLAMA_API_KEY:-}" ]; then note "ollama: no OLLAMA_API_KEY"
   elif ollama_list >/dev/null 2>&1; then good "ollama.com accepts the key"
   else note "ollama.com did not accept the key or serve a listed model"; fi
+
+  if command -v node >/dev/null 2>&1 && [ -d "$MERMAID/node_modules/mermaid" ]; then
+    good "diagrams: checked by mermaid"
+  else note "$DIAGRAMS_OFF"; fi
 
   say "models"
   show_models regular || rc=1

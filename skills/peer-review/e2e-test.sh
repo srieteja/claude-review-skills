@@ -35,7 +35,7 @@ case "$1 $2" in
   "pr edit")   exit 0 ;;
   "api user")  echo "$STUB_ME" ;;
   "api -X")    while [ $# -gt 0 ]; do
-                 case "$1" in -F) case "$2" in body=@*) cp "${2#body=@}" "$STUB_LOG/review-body" ;; esac ;; esac; shift
+                 case "$1" in --input) cp "$2" "$STUB_LOG/review.json"; shift ;; esac; shift
                done
                echo "$REVIEW_URL" ;;
   *) echo "gh stub: unhandled: $*" >&2; exit 64 ;;
@@ -68,6 +68,8 @@ chmod +x "$SB/bin/"*
 export PATH="$SB/bin:$PATH" PEER_REVIEW_INTENSE="$SB/bin/intense-review.sh" \
        OLLAMA_API_KEY=k PR_REVIEW_FIX_AUTHORS=alice REVIEW_SKILLS_CONFIG="$SB/no-config" REVIEW_SKILLS_LOCK_DIR="$SB/locks"
 export REVIEW_SKILLS_MODELS=manual
+# The learning engine's hooks are offline-test.sh's; here they'd only call the claude stub.
+export PR_REVIEW_LEARN=off PR_REVIEW_LEARN_DIR="$SB/learn"
 unset PEER_REVIEW_AUTOFIX AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_CLAUDE AUTOFIX_MODEL
 
 confirmed='[{"id":"anthropic.c01-F1","file":"pkg/lib/a.dart","line":1,"claim":"Old value leaks past the reset",
@@ -99,6 +101,8 @@ rerun() { GIT_AUTHOR_DATE=2001-01-01T00:00:00Z GIT_COMMITTER_DATE=2001-01-01T00:
 rc_is()  { [ "$rc" = "$1" ]; }
 said()   { grep -qxF -- "$1" "$C/stdout"; }
 logged() { [ -f "$C/log/$1" ] && grep -qF -- "$2" "$C/log/$1"; }
+# The one POST ship makes: its --input payload, tested with jq against the reviewed SHA.
+posted_review() { jq -e --arg sha "$SHA" "$1" "$C/log/review.json" >/dev/null 2>&1; }
 never()  { ! logged "$@"; }
 calls()  { if [ -f "$C/log/$1" ]; then wc -l < "$C/log/$1" | tr -d ' '; else echo 0; fi; }
 pushed() { git --git-dir="$C/remotes/acme/widgets.git" rev-parse -q --verify refs/heads/$FB; }
@@ -123,7 +127,7 @@ check "tells you how to ship"                      grep -qF -- "--ship" "$C/stde
 echo "ship"
 printf '\nEDITED BEFORE SHIPPING\n' >> "$FROZEN/body.md"; run 7 --ship
 check "exits 0"                                    rc_is 0
-check "reports the opened PR"                      said "STATUS=opened:$URL"
+check "reports the opened PR"                      said "LANE=stacked STATUS=opened:$URL"
 check "reports the author was asked"               said "REVIEWER=requested:alice"
 check "asks alice on the fix PR"                   logged gh "pr edit $URL --add-reviewer alice"
 check "pushes the fix onto alice's head"           pushed_file_is new
@@ -137,7 +141,7 @@ check "review ran once, implementer ran once"      [ "$(calls intense):$(calls c
 
 run 7 --ship
 check "shipping twice: exits 0"                    rc_is 0
-check "  reports the existing PR"                  said "STATUS=exists:$URL"
+check "  reports the existing PR"                  said "LANE=stacked STATUS=exists:$URL"
 check "  opens nothing new"                        [ "$(grep -c '^pr create' "$C/log/gh")" = 1 ]
 
 echo "a ship cut short after the push"
@@ -146,7 +150,7 @@ check "pr create fails: exits 1"                   rc_is 1
 check "  the branch is already on origin"          pushed
 TIP="$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse $FB)"
 export STUB_CREATE_RC=0; rerun 7 --ship
-check "ship again: opens the PR"                   said "STATUS=opened:$URL"
+check "ship again: opens the PR"                   said "LANE=stacked STATUS=opened:$URL"
 check "  on the branch already pushed"             [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse $FB)" = "$TIP" ]
 check "  and asks alice"                           said "REVIEWER=requested:alice"
 check "  one push, one PR"                         [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-list --count $FB)" = 2 ]
@@ -154,7 +158,7 @@ check "  one push, one PR"                         [ "$(git --git-dir="$C/remote
 echo "refusals"
 setup; run 7; echo "moved000" > "$C/log/live"; run 7 --ship
 check "alice pushed after the review: refused"     rc_is 1
-check "  reports stale"                            said "STATUS=stale"
+check "  reports stale"                            said "LANE=stacked STATUS=stale"
 check "  nothing pushed"                           unpushed
 
 setup; export STUB_ME=ALICE; run 7
@@ -167,7 +171,7 @@ check "only UNVERIFIABLE findings: approve"        said "DECISION=approve"
 check "  freezes no fix"                           [ ! -e "$FROZEN" ]
 run 7 --ship
 check "  ship approves"                            said "STATUS=approved:$REVIEW_URL"
-check "  pinned to the reviewed SHA"               logged gh "-f event=APPROVE -f commit_id=$SHA"
+check "  pinned to the reviewed SHA"               posted_review '.event == "APPROVE" and .commit_id == $sha'
 check "  nothing pushed, no PR opened"             sh -c "! git --git-dir='$C/remotes/acme/widgets.git' rev-parse -q --verify refs/heads/$FB && ! grep -q '^pr create' '$C/log/gh'"
 
 setup; export PR_REVIEW_FIX_AUTHORS=bob; run 7; export PR_REVIEW_FIX_AUTHORS=alice
@@ -175,8 +179,8 @@ check "CONFIRMED, author not on the fix list: request-changes" said "DECISION=re
 check "  the implementer never runs"               [ "$(calls claude)" = 0 ]
 run 7 --ship
 check "  ship requests changes"                    said "STATUS=changes-requested:$REVIEW_URL"
-check "  pinned to the reviewed SHA"               logged gh "-f event=REQUEST_CHANGES -f commit_id=$SHA"
-check "  naming the finding"                       grep -qF "Old value leaks past the reset" "$C/log/review-body"
+check "  pinned to the reviewed SHA"               posted_review '.event == "REQUEST_CHANGES" and .commit_id == $sha'
+check "  naming the finding"                       posted_review '.body | contains("Old value leaks past the reset")'
 check "  nothing pushed"                           unpushed
 
 [ "$fail" = 0 ] && echo "all passed" || { echo "FAILURES"; exit 1; }
