@@ -1,4 +1,4 @@
-"""peer-review/review_learn.py -- capture, metrics, profile, distill, writer and backfill. Every
+"""peer-review/review_learn.py -- capture, metrics, profile, distill and writer. Every
 test runs against temp stores and a temp learn dir; the LLM is always a stub, never claude."""
 import json
 import os
@@ -79,7 +79,7 @@ class Base(unittest.TestCase):
             else:
                 os.environ[k] = v
 
-    def review(self, pr=2387, repo="at_client_sdk", author="Xlin123", store=None,
+    def review(self, pr=2387, repo="widgets", author="bob", store=None,
                decision="request-changes", findings=(F_A, F_B, F_R), text=TEMPLATE, sha=SHA,
                meta=True):
         d = (store or self.intense) / author / repo / str(pr)
@@ -126,7 +126,7 @@ class TestSnapshot(Base):
         d = self.review()
         rl.record_prepare(d)
         learn = json.loads((d / "decision" / "learn.json").read_text())
-        self.assertEqual(learn["arm"], rl.arm_for("at_client_sdk#2387"))
+        self.assertEqual(learn["arm"], rl.arm_for("widgets#2387"))
         self.assertEqual(learn["engine"], "intense")
         self.assertIn("profile_version", learn)
 
@@ -158,7 +158,7 @@ class TestShip(Base):
         e = self.ship(d, decision="request-changes", text=TEMPLATE)
         self.assertEqual((e["proposed"], e["shipped"], e["agreement"]), ("approve", "request-changes", False))
         self.assertEqual((e["key"], e["repo"], e["pr"], e["author"], e["sha8"]),
-                         ("at_client_sdk#2387", "at_client_sdk", 2387, "Xlin123", SHA[:8]))
+                         ("widgets#2387", "widgets", 2387, "bob", SHA[:8]))
         self.assertTrue(e["human"])
 
     def test_one_removed_marker_is_exactly_one_drop(self):
@@ -222,12 +222,17 @@ class TestShip(Base):
         self.assertEqual(self.events(), [])
 
     def test_repo_from_the_report_when_there_is_no_meta(self):
-        d = self.review(pr=2373, repo="at_client_sdk", author="alice", decision="approve",
+        d = self.review(pr=2373, repo="widgets", author="alice", decision="approve",
                         findings=(), text="clean\n", meta=False, store=self.regular)
         e = self.ship(d)
-        self.assertEqual((e["key"], e["engine"]), ("at_client_sdk#2373", "regular"))
+        self.assertEqual((e["key"], e["engine"]), ("widgets#2373", "regular"))
         self.assertIsNone(e["proposed"])
         self.assertIsNone(e["edit_ratio"])
+
+    def test_repo_from_the_store_path_when_nothing_names_it(self):
+        d = self.review(pr=12, repo="gadgets", meta=False)
+        (d / "pr12-review.md").write_text("# PR #12 — t\n")
+        self.assertEqual(rl.pr_info(d), ("gadgets#12", "gadgets", 12, "bob"))
 
 
 class TestRerun(Base):
@@ -237,7 +242,7 @@ class TestRerun(Base):
         d = self.review()
         rl.record_prepare(d)
         (d / "decision" / "decision").write_text("approve\n")  # a --decide in between
-        missing = self.regular / "Xlin123" / "2387"
+        missing = self.regular / "bob" / "2387"
         rl.record_rerun([missing, d], head=SHA)
         (e,) = self.events()
         self.assertEqual((e["kind"], e["proposed"], e["shipped"]), ("rerun", "request-changes", None))
@@ -334,7 +339,7 @@ class TestStats(Base):
 
     def test_no_arm_is_baseline_and_null_metrics_are_left_out(self):
         d = self.review(pr=5)
-        e = self.ship(d)  # no prepare snapshot: as backfill, nothing to compare
+        e = self.ship(d)  # no prepare snapshot: nothing to compare
         self.assertIsNone(e["arm"])
         b = rl.stats(window=None, now=NOW)["arms"]["baseline"]
         self.assertEqual(b["edit_ratio"], {"value": None, "n": 0})
@@ -362,7 +367,7 @@ class TestArm(Base):
     """Plan test 10."""
 
     def test_stable_and_about_a_fifth(self):
-        self.assertEqual({rl.arm_for("at_server#2894") for _ in range(5)}, {rl.arm_for("at_server#2894")})
+        self.assertEqual({rl.arm_for("gadgets#2894") for _ in range(5)}, {rl.arm_for("gadgets#2894")})
         n = sum(rl.arm_for("repo%d#%d" % (i % 7, i)) == "control" for i in range(1000))
         self.assertTrue(150 <= n <= 250, n)
 
@@ -670,9 +675,9 @@ class TestWriteBody(Base):
 
     def test_write_body_dir_uses_active_writer_rules_and_records_learn_json(self):
         rl.import_seed()
-        d = self.review(pr=7, repo="at_server")
+        d = self.review(pr=7, repo="gadgets")
         seen = []
-        arm = rl.arm_for("at_server#7")
+        arm = rl.arm_for("gadgets#7")
         rl.write_body_dir(d, llm=lambda p: seen.append(p) or TEMPLATE)
         learn = json.loads((d / "decision" / "learn.json").read_text())
         self.assertEqual((learn["arm"], learn["writer"]), (arm, "llm"))
@@ -698,36 +703,6 @@ class TestWriteBody(Base):
         out = TEMPLATE + "\nThanks.\n"
         rl.write_body_dir(d, llm=lambda p: out)
         self.assertEqual((d / "decision" / "body.md").read_text(), out)
-
-
-class TestBackfill(Base):
-    def ledger(self, *rows):
-        (self.tmp / "state").mkdir(parents=True, exist_ok=True)
-        (self.tmp / "state" / "ledger.tsv").write_text("".join(
-            "\t".join(["2026-10-22 02:22:36", fin, key, sha8, "x", status, "-", "-", "-", "-", "t"]) + "\n"
-            for key, sha8, status, fin in rows))
-
-    def test_shipped_dirs_once_with_human_from_the_ledger(self):
-        w = self.review(pr=2387)
-        (w / "decision" / "posted").write_text("u\n")
-        h = self.review(pr=2891, repo="at_server", author="AquibAquil", store=self.regular)
-        (h / "decision" / "posted").write_text("u\n")
-        self.review(pr=2099)  # decided, never shipped
-        self.ledger(("at_client_sdk#2387", SHA[:8], "changes-requested", "2026-10-23 07:50:06"),
-                    ("at_server#2891", SHA[:8], "approve-held", "2026-10-22 02:43:55"))
-        self.assertEqual(rl.backfill()["added"], 2)
-        self.assertEqual(rl.backfill()["added"], 0)
-        evs = {e["key"]: e for e in self.events()}
-        self.assertEqual(sorted(evs), ["at_client_sdk#2387", "at_server#2891"])
-        self.assertFalse(evs["at_client_sdk#2387"]["human"])
-        self.assertTrue(evs["at_server#2891"]["human"])
-        self.assertEqual((evs["at_server#2891"]["proposed"], evs["at_server#2891"]["agreement"]),
-                         ("approve", False))
-        self.assertIsNone(evs["at_server#2891"]["edit_ratio"])
-        self.assertIsNone(evs["at_server#2891"]["arm"])
-        # the ledger writes local time; events are UTC
-        local = datetime.strptime("2026-10-23 07:50:06", "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc)
-        self.assertEqual(evs["at_client_sdk#2387"]["ts"], local.strftime("%Y-%m-%dT%H:%M:%SZ"))
 
 
 if __name__ == "__main__":

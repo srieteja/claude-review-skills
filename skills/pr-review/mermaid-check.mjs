@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Checks a brief's diagram the way the dashboard renders it: mermaid 11.16.1's own parser
+// Checks a brief's diagram the way a renderer sees it: mermaid 11.16.1's own parser
 // (under jsdom, no browser), then grounding -- each identifier-like token in a label must
 // appear in the PR's diff. Grounding annotates, never fails: generic context nodes are fine.
 //
@@ -7,8 +7,8 @@
 //   stdout {"ok": bool, "error": str|null, "ungrounded": [token, ...] | null (no diff given)}
 //   exit   0 parsed · 1 parse error · 2 usage, or the deps in ./mermaid aren't installed
 //
-// Deps are pinned in ./mermaid/package.json (selftest.sh installs them), the same version
-// as reviews/dashboard/dist/vendor/mermaid.min.js, so what passes here renders there.
+// Deps are pinned in ./mermaid/package.json (`review-skills install` installs them). Render
+// with the same mermaid version and what passes here renders there.
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";

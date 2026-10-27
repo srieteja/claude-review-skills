@@ -5,10 +5,10 @@
 #       $same (1: refuter of a finder's family) $burden (strict|evidence)
 #       $gaps (unreviewed slices) $gap_notes (one "> - `key`: why" line per gap)
 #
-# Frozen, because peer-review.sh gates an approval on them and pr-review-ops/ledger.py
-# parses the first: the "**N survived refutation · N disputed · N refuted.**" prefix and the
-# "**Incomplete.**" banner. dashboard-shared/markdown.js links a table row to the "## <id> — "
-# heading its first cell opens.
+# Frozen, because peer-review.sh gates an approval on them and tools that index reports parse
+# the first: the "**N survived refutation · N disputed · N refuted.**" prefix and the
+# "**Incomplete.**" banner. The table links each row to the "## <id> — " heading its first
+# cell opens.
 include "confirmed";
 
 def rule: if $burden == "evidence"
@@ -22,7 +22,7 @@ def is_test: .file | test("(^|/)test/|_test\\.");
 def oneline: gsub("\\s*\\n\\s*"; " ");
 def cell: oneline | gsub("\\|"; "\\|");
 def basename: split("/") | last;
-# dashboard-shared/markdown.js's heading id, so an in-page link lands on it.
+# A heading's anchor id (lowercase, non-alphanumeric runs -> "-"), so an in-page link lands on it.
 def slug: ascii_downcase | gsub("[^\\p{L}\\p{N}]+"; "-") | .[0:64] | gsub("^-+|-+$"; "");
 def flag: if .v.verdict == "CONFIRMED" then "" else "⚠️ \(.v.verdict) · " end;
 def titled: (.title // "") != "";

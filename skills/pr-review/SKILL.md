@@ -213,7 +213,7 @@ further than a report: a companion PR with the fix, against that author's own br
 3. A fix PR already exists for this reviewed head (branch `fix/pr<N>-review-findings-<sha12>`, any state) -> `STATUS=exists:<url>`, exit clean.
    - Open, merged or closed, it is these same findings: already proposed, already taken, or a human's no.
    - A fix PR for an earlier head never blocks, open or not. A re-review after a new push that confirms findings opens its own fix PR.
-4. **The PR head moved since the review -> `STATUS=stale`, exit 1, in every mode.** The findings describe code the PR no longer is, and after a rebase a fix on the old head would bring the commits the author dropped back into their branch. `watch.sh` marks the reviewed head seen (ledger `stale`), so its next tick reviews the new one.
+4. **The PR head moved since the review -> `STATUS=stale`, exit 1, in every mode.** The findings describe code the PR no longer is, and after a rebase a fix on the old head would bring the commits the author dropped back into their branch. A watcher should mark the reviewed head seen, so its next tick reviews the new one.
    - Only then: `dart` not on `PATH` -> exit 1, no STATUS. The gate can't run, so the implementer isn't paid for.
 5. **`claude -p` implements every confirmed finding as one task**, in a throwaway `--shared` clone at the reviewed SHA. Only a patch comes back, and this script re-applies it itself.
    - A clone, not a worktree: a worktree shares refs and the stash with your clone, so anything it committed or branched would land there. Its `origin` is removed, so a push from inside has nowhere to go.

@@ -8,12 +8,11 @@ the body writer follows.
                                           this code validates them and does every count
   writer    write-body                 -- restyles a request-changes body under the active
                                           writer rules; any lost CONFIRMED marker reverts it
-  backfill  backfill                   -- ship events for dirs shipped before capture existed
 
 Store (PR_REVIEW_LEARN_DIR, else $PR_REVIEW_STATE/learn, else ~/.local/state/pr-review/learn):
   events.jsonl  bodies/<event-id>.json  profile.json  history/profile-v<N>.json  errors.log
 
-`record` and `write-body` are hooks: they always exit 0, never print to stdout (watch.sh parses
+`record` and `write-body` are hooks: they always exit 0, never print to stdout (callers parse
 peer-review's), and log failures to errors.log. PR_REVIEW_LEARN=off turns them into no-ops.
 Stdlib only: peer-review.sh runs it on whatever python3 is first on PATH.
 """
@@ -36,7 +35,6 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HOME = Path.home()
-LEGACY_REPO = "at_client_sdk"   # review_index.LEGACY_REPO: stores from before keys carried a repo
 
 HALF_LIFE_DAYS = 60
 ACTIVE_SUPPORTS = 2      # one edit isn't a preference
@@ -45,9 +43,6 @@ HOLDOUT_MOD = 5          # sha1(key) % 5 == 0 -> control, about 20%
 TARGETS = ("writer", "finder")
 EFFECTS = ("style", "emphasize", "rank")
 MAX_RULE_CHARS = 300
-# Ledger statuses that mean watch.sh's deliver() shipped it, unattended (review_index.SHIPPED).
-WATCH_SHIPPED = {"changes-requested": "request-changes", "fix-opened": "fix", "approved": "approve"}
-LEDGER_PROPOSED = dict(WATCH_SHIPPED, **{"approve-held": "approve"})
 
 _PR_URL = re.compile(r"github\.com/[^/\s]+/([^/\s]+)/pull/(\d+)")
 # confirmed.jq's `file:line`. Ship posts an inline comment only while its marker is in the body.
@@ -71,10 +66,6 @@ def stores():
     regular = Path(os.environ.get("PR_REVIEW_DIR") or HOME / ".reviews")
     return (("intense", Path(os.environ.get("PR_REVIEW_INTENSE_DIR") or regular / "_intense")),
             ("regular", regular))
-
-
-def ledger_path():
-    return Path(os.environ.get("PR_REVIEW_STATE", HOME / ".local/state/pr-review")) / "ledger.tsv"
 
 
 def utcnow():
@@ -151,13 +142,13 @@ def text_hash(text):
 
 def pr_info(d):
     """(key, repo, pr, author) for a store dir. Repo from meta.json's url, else the posted url,
-    else the report's url line (zero-findings runs write no meta.json), else the legacy repo."""
+    else the report's url line (zero-findings runs write no meta.json), else the store path."""
     d = Path(d)
     pr = int(d.name)
     texts = [(read_json(d / "meta.json", {}) or {}).get("url") or "",
              read(d / "decision" / "posted") or "",
              (read(d / ("pr%d-review.md" % pr)) or "")[:2000]]
-    repo = LEGACY_REPO
+    repo = d.parent.name
     for t in texts:
         m = _PR_URL.search(t)
         if m and int(m.group(2)) == pr:
@@ -257,7 +248,7 @@ def shipped_already(key, sha8):
 
 
 def human_shipper():
-    """watch.sh ships with PEER_REVIEW_SHIPPER=watch: an unattended ship expresses no preference."""
+    """An unattended shipper sets PEER_REVIEW_SHIPPER=watch: its ship expresses no preference."""
     return os.environ.get("PEER_REVIEW_SHIPPER", "") != "watch"
 
 
@@ -378,7 +369,7 @@ def _metrics(evs):
 
 
 def stats(window=30, now=None):
-    """Human events only, split by arm. Events from before v3 (and backfill) have no arm and
+    """Human events only, split by arm. Events from before v3 have no arm and
     are the `baseline`: the before half of before/after."""
     now = now or utcnow()
     evs = [e for e in read_events() if e.get("human")]
@@ -835,53 +826,6 @@ def write_body_dir(d, llm=None):
                             "rules": [r["id"] for r in rules] if arm == "treatment" else []})
 
 
-# ---- backfill ---------------------------------------------------------------------------------
-
-def _ledger_rows(path):
-    rows = []
-    for line in (read(path) or "").splitlines():
-        c = line.split("\t")
-        if len(c) < 6:
-            continue
-        key = c[2] if "#" in c[2] else "%s#%s" % (LEGACY_REPO, c[2])
-        rows.append({"finished": c[1], "key": key, "sha8": c[3], "status": c[5]})
-    return rows
-
-
-def _local_to_ts(s):
-    return fmt_ts(datetime.strptime(s, "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc))
-
-
-def backfill(now=None):
-    """Ship events for dirs shipped before capture existed. Who shipped comes from the ledger:
-    a row at the same head whose status is a watch.sh delivery was unattended. The proposal is
-    that row's decision when there is one; the draft is unknown, so edit_ratio is null."""
-    rows = _ledger_rows(ledger_path())
-    added = skipped = 0
-    for _, root in stores():
-        for posted in sorted(Path(root).glob("*/*/*/decision/posted")):
-            d = posted.parent.parent
-            if not d.name.isdigit() or not read_word(posted):
-                continue
-            key = pr_info(d)[0]
-            sha8 = (read_word(d / "decision" / "sha") or "")[:8]
-            if shipped_already(key, sha8):
-                skipped += 1
-                continue
-            row = ([r for r in rows if r["key"] == key and r["sha8"] == sha8] or [None])[-1]
-            status = row["status"] if row else None
-            human = status not in WATCH_SHIPPED
-            if not human and row["finished"] not in ("", "-"):
-                ts = _local_to_ts(row["finished"])
-            else:
-                ts = fmt_ts(datetime.fromtimestamp(posted.stat().st_mtime, timezone.utc))
-            e, bodies = _ship_event(d, ts, human, LEDGER_PROPOSED.get(status))
-            e["backfill"] = True
-            append_event(e, bodies)
-            added += 1
-    return {"added": added, "skipped": skipped}
-
-
 # ---- CLI --------------------------------------------------------------------------------------
 
 def _parser():
@@ -898,7 +842,6 @@ def _parser():
     st.add_argument("--window", type=int, default=30, help="days; 0 for all time")
     sub.add_parser("distill")
     sub.add_parser("seed")
-    sub.add_parser("backfill")
     sub.add_parser("profile")
     return ap
 
@@ -936,8 +879,6 @@ def main(argv=None):
         out = distill()
     elif a.cmd == "seed":
         out = import_seed() or load_profile()
-    elif a.cmd == "backfill":
-        out = backfill()
     else:
         out = view(load_profile())
     print(json.dumps(out, indent=2, sort_keys=True))

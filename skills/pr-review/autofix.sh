@@ -19,7 +19,7 @@
 # and report none otherwise. Ship reads only the frozen files.
 #
 # AUTOFIX_MODE picks how far one call goes:
-#   unset    implement, gate, push, open -- one shot, what watch.sh runs
+#   unset    implement, gate, push, open -- one shot, what an unattended caller runs
 #   prepare  implement and gate, then freeze patch, title, body and SHA into AUTOFIX_FROZEN
 #   ship     re-apply the frozen patch (claude is not re-run), re-gate, push, open with the
 #            frozen title and body -- what a human approved is exactly what gets posted
@@ -59,7 +59,7 @@ LAST_EVENT='include "last-event"; last_event'
 CLAUDE="${AUTOFIX_CLAUDE:-claude}"
 MODEL="${AUTOFIX_MODEL:-claude-opus-5-5}"
 EFFORT="${AUTOFIX_EFFORT:-high}"
-# A runaway guard like pr-review.sh's PR_REVIEW_BUDGET_USD, not a budget: watch.sh runs this
+# A runaway guard like pr-review.sh's PR_REVIEW_BUDGET_USD, not a budget: a watcher may run this
 # unattended, and nothing else bounds the run. A capped run ends in error, so no PR.
 BUDGET="${AUTOFIX_BUDGET:-8.00}"; [ "$BUDGET" != none ] || BUDGET=""
 DRY_RUN="${AUTOFIX_DRY_RUN:-0}"          # stop after the test gate; never push or open a PR
@@ -204,7 +204,7 @@ fi
 # exactly what was gated. A stacked lane stands on the reviewed SHA: if the author has pushed
 # since, the findings -- and any frozen patch -- describe code that is no longer the PR, and
 # after a rebase a fix on the old head would carry the commits they dropped back into their
-# branch. watch.sh has already marked this head seen, so its next tick reviews the new one.
+# branch. A watcher should mark this head seen, so its next tick reviews the new one.
 # The trunk lane's findings describe trunk, which the PR's head moving doesn't change; nor
 # does lint's analysis of it.
 if [ "$MODE" = ship ] && [ -s "$FROZEN/base" ]; then

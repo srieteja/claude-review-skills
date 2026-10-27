@@ -186,7 +186,7 @@ mark_running() {  # mark_running <outdir> -- this pid in <outdir>/running until 
 plural() { if [ "$1" = 1 ]; then printf '%s %s' "$1" "$2"; else printf '%s %ss' "$1" "$2"; fi; }
 
 # lane_dir <lane> -- where a lane freezes: the stacked one, from before lanes, in autofix/
-# itself -- review_learn.py and review_index.py read it there -- every other in autofix/<lane>/.
+# itself -- review_learn.py reads it there -- every other in autofix/<lane>/.
 lane_dir() { if [ "$1" = stacked ]; then echo "$OUTDIR/autofix"; else echo "$OUTDIR/autofix/$1"; fi; }
 # drop_lane <lane> -- forget a lane's freeze; the stacked one leaves the others' dirs alone
 drop_lane() {

@@ -652,7 +652,7 @@ check "ship records what went out, by a human"     event 'length == 1 and .[0].k
                                                      and .[0].agreement == false'
 
 setup; export STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")"; run 7; PEER_REVIEW_SHIPPER=watch run 7 --ship
-check "a watch.sh ship is recorded as no one's"    event '.[0].human == false and .[0].agreement == true'
+check "an unattended ship is recorded as no one's" event '.[0].human == false and .[0].agreement == true'
 setup; author carol; export STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")"; run 7; run 7 --ship
 check "a fix PR's ship is recorded"                event '.[0].shipped == "fix" and .[0].proposed == "fix"'
 check "  its draft is the fix PR's body"           cmp -s "$INT/decision/draft.md" "$INT/autofix/body.md"

@@ -46,7 +46,7 @@ check "line 3 is the outcome, with severity counts and the code/test split" \
   is "$(sed -n 3p "$T/2382.md")" "**6 survived refutation · 0 disputed · 0 refuted.** 3 🟠 medium · 3 🟡 low · 1 code defect, 5 test gaps"
 check "  every severity, worst first, unrated last" \
   is "$(sed -n 3p "$T/syn.md")" "**4 survived refutation · 1 disputed · 1 refuted.** 1 🔴 high · 1 🟠 medium · 1 🟡 low · 1 ⚪ unrated · 3 code defects, 1 test gap"
-check "  ledger.py's counts() still parses it" \
+check "  a report indexer's counts regex still parses it" \
   is "$(sed -n 3p "$T/2382.md" | "$PY" -c 'import re,sys; m=re.search(r"\*\*(\d+) survived refutation . (\d+) disputed . (\d+) refuted", sys.stdin.read()); print(m and m.groups())')" "('6', '0', '0')"
 check "with gaps, the Incomplete banner is byte-identical"   is "$(sed -n 5p "$T/2382.md")" "$BANNER"
 check "  and report.jq still holds it verbatim"   has "$HERE/report.jq" '"> ⚠️ **Incomplete.** These review slices produced nothing:\($gaps). The files in them were **not reviewed** — absence of a finding there means absence of a reviewer, not absence of a bug."'

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # autofix.sh -- guards, the test gate, the prepare/ship split, resuming a half-finished ship,
-# the reviewer request, and the unset-env path watch.sh takes. gh, claude and dart are
+# the reviewer request, and the unattended unset-env path. gh, claude and dart are
 # stubbed; origin is a local bare repo, so the real `git push` runs and nothing leaves this
 # machine.
 set -euo pipefail
@@ -208,7 +208,7 @@ only_tested_in() { [ -s "$C/log/dart.cwd" ] && ! grep -qv -- "$1\$" "$C/log/dart
 pushed_lacks() { ! git --git-dir="$C/remotes/acme/widgets.git" cat-file -e "$FB:$1"; }
 URL=https://github.com/acme/widgets/pull/99
 
-echo "default path (what watch.sh runs)"
+echo "default path (what an unattended caller runs)"
 setup; run
 check "exits 0"                                rc_is 0
 check "reports the opened PR"                  said "STATUS=opened:$URL"
