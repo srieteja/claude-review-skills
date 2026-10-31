@@ -236,7 +236,7 @@ prepare_side() {
     0:*STATUS=dropped*|0:*STATUS=none*|0:*STATUS=exists:*) ;;
     # Every implementer is rate-limited (autofix's 75, with RESUME_AT=): a limit says nothing
     # about the PR, so nothing is frozen -- the decision would ship without the fix it pairs with.
-    75:*STATUS=deferred*) exit 75 ;;
+    75:*STATUS=deferred*) printf '%s\n' "$OUT"; exit 75 ;;
     *) warn "autofix didn't prepare the $1 lane's fix for #$PR ($FIX_WHY) -- the decision stands" ;;
   esac
 }

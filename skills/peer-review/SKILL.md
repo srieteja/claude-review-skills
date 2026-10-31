@@ -52,6 +52,8 @@ flowchart LR
 - **The engine is picked before any spend**, printed as `ENGINE=intense|regular`: intense when its resolved refuter is of a family no finder is from and, on ollama, answers a 1-token call. On intense, intense-review's warning applies: cost is uncapped, and the diff and claims may go to ollama.com. The regular review resolves its own models; `PR_REVIEW_FINDERS` / `PR_REVIEW_REFUTER` pins are not passed to it.
 - **For a fix author, a CONFIRMED finding means `claude -p` writes code** from LLM findings about someone else's PR, and prepare runs it (accept-edits, with `dart test`/`pub get`/`analyze` as its only shell, in a throwaway clone, then `dart pub get && dart test`, or `dart analyze` for a live-rig pack under `tests/`) before anyone reads it. `AUTOFIX_MODEL` picks the model (default `claude-opus-5-5`), and prepare prints it as `IMPLEMENTER=`. The gate is Dart-only: a patch touching `.github/` or a file outside every package is refused, and the decision falls back to request-changes.
 
+**Implementers.** `AUTOFIX_IMPLEMENTERS` (default `claude ollama`) is tried in order: one whose account is rate-limited hands the task to the next, and `ollama` needs `OLLAMA_API_KEY` and runs `AUTOFIX_OLLAMA_MODEL`. Only when every one is limited does prepare defer (exit 75). `RESUME_AT` is the rejected window's reset plus 60s, or `AUTOFIX_DEFER_FALLBACK` seconds (default 18000) from now when the limit names none.
+
 ## What prepare ends in
 
 | stdout | meaning |
@@ -61,6 +63,7 @@ flowchart LR
 | `STATUS=prepared` + `DECISION=request-changes` | CONFIRMED findings, frozen into `decision/body.md` |
 | `STATUS=stale` / `STATUS=exists:<url>` | from autofix: the head moved, or a fix PR for this head already exists (one for an earlier head doesn't count). Nothing decided. |
 | `LANE=<lane> STATUS=…` | one line per fix lane beside the decision: `stacked` (the fix above), `trunk` (confirmed findings already on the PR's base, frozen in `autofix/trunk/`, a fix PR against trunk), `lint` (with `AUTOFIX_LINT=1`). A side lane that fails or drops is reported, never the decision's outcome. |
+| `STATUS=deferred` + `RESUME_AT=<epoch>` (exit 75) | every implementer is rate-limited (429, quota). Nothing decided or frozen, and never a request-changes: re-run after `RESUME_AT` (the review is cached; only the fix lane reruns). |
 | `STATUS=merged-clean` | the PR merged with nothing confirmed, or the trunk lane found nothing left on its base. Nothing decided. (A trunk fix PR already open: `STATUS=exists:<url>`.) |
 | exit 1 | refused, failed, a finding left unchecked (`ERROR` or no verdict), or a clean review that skipped slices. Nothing decided — re-run. |
 

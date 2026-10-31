@@ -21,7 +21,7 @@ This is what a program built on top of these skills can rely on: a scheduler tha
 - Prepare prints `ENGINE=`, then `STATUS=prepared` and `DECISION=`, plus a `LANE= STATUS=` line for each fix lane it prepared.
 - Ship prints one bare `STATUS=` line for an approve or request-changes, or one `LANE= STATUS=` line per lane for a fix.
 - Exit 0 means it settled. Exit 1 means it was refused (`stale`) or failed.
-- Exit 75 means the implementer hit a rate limit before a stacked fix could be written: `STATUS=deferred` and `RESUME_AT=<epoch>` (the window's reset plus a minute, or now plus `AUTOFIX_DEFER_FALLBACK` seconds, 5 h by default, when the reset is unknown). Nothing is frozen and nothing failed, so a wrapper pauses until `RESUME_AT` and runs the same head again. A side lane's deferral changes nothing: the decision is already frozen.
+- Exit 75 (EX_TEMPFAIL) means every fix implementer is rate-limited: prepare prints `STATUS=deferred` and `RESUME_AT=<epoch>` (when the limit lifts), with no `DECISION=` and nothing frozen. It is neither a failure nor a settled review: a wrapper posts nothing, records no failure, and retries after `RESUME_AT`.
 
 ## Store
 
@@ -66,6 +66,9 @@ file    autofix/base
 pinned  skills/peer-review/offline-test.sh  LANE=trunk STATUS=prepared
 pinned  skills/peer-review/offline-test.sh  autofix/trunk/fix.patch
 pinned  skills/peer-review/offline-test.sh  /running"
+pinned  skills/peer-review/offline-test.sh  STATUS=deferred
+pinned  skills/peer-review/offline-test.sh  RESUME_AT=1793300000
+pinned  skills/peer-review/offline-test.sh  autofix deferred on a rate limit: exits 75
 pinned  skills/pr-review/render-test.sh     survived refutation
 pinned  skills/pr-review/offline-test.sh    -explainer.md
 pinned  skills/pr-review/diagram-test.sh    -diagram.mmd
@@ -75,6 +78,9 @@ env     PR_REVIEW_DIR
 env     PR_REVIEW_INTENSE_DIR
 env     PR_REVIEW_FIX_AUTHORS
 env     PEER_REVIEW_SHIPPER
+env     AUTOFIX_IMPLEMENTERS
+env     AUTOFIX_OLLAMA_MODEL
+env     AUTOFIX_DEFER_FALLBACK
 
 api     learn_dir()
 api     load_profile()
