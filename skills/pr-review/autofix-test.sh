@@ -39,6 +39,7 @@ cat > "$SB/bin/claude" <<'STUB'
 #!/usr/bin/env bash
 # One line per call; the flags, the prompt and where it ran are kept for the checks.
 echo call >> "$STUB_LOG/claude"
+[ -z "${ANTHROPIC_BASE_URL:-}" ] || { echo "$ANTHROPIC_BASE_URL $ANTHROPIC_AUTH_TOKEN $*" >> "$STUB_LOG/ollama"; }
 printf '%s\n' "$@" > "$STUB_LOG/claude.args"
 pwd > "$STUB_LOG/claude.cwd"; git rev-parse HEAD > "$STUB_LOG/claude.head"
 git remote > "$STUB_LOG/claude.remotes"
@@ -52,7 +53,8 @@ if [ -n "${STUB_COMMIT:-}" ]; then
 fi
 # What its own `dart pub get` leaves: neither is part of the fix.
 : > pkg/pubspec.lock; mkdir -p pkg/.dart_tool; echo x > pkg/.dart_tool/cache
-[ -z "${STUB_CLAUDE_OUT:-}" ] || { printf '%s\n' "$STUB_CLAUDE_OUT"; exit 0; }
+out="${STUB_CLAUDE_OUT:-}"; [ -z "${ANTHROPIC_BASE_URL:-}" ] || out="${STUB_OLLAMA_OUT:-}"
+[ -z "$out" ] || { printf '%s\n' "$out"; exit 0; }
 printf '{"type":"result","subtype":"%s","is_error":%s,"result":"done"}\n' \
   "${STUB_SUBTYPE:-success}" "${STUB_IS_ERROR:-false}"
 STUB
@@ -134,8 +136,8 @@ JSON
   FROZEN="$C/out/autofix"
   export STUB_LOG="$C/log" STUB_PATCH="$C/fix.patch" STUB_REPO=acme/widgets STUB_EXISTING="" \
          STUB_ME=me STUB_BLAME=bob STUB_EDIT_RC=0 STUB_DART_RC=0 STUB_ANALYZE_RC=0 STUB_ANALYZE_OLD="" STUB_ANALYZE_NEW="" STUB_CLAUDE_RC=0 STUB_CREATE_RC=0 STUB_DART_STDIN="" \
-         STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success STUB_CLAUDE_SH="" STUB_CLAUDE_OUT=""
-  unset AUTOFIX_DEFER_FALLBACK AUTOFIX_LINT_LEVEL AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_LANE AUTOFIX_TRUNK_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE AUTOFIX_ANALYZE_ONLY
+         STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success STUB_CLAUDE_SH="" STUB_CLAUDE_OUT="" STUB_OLLAMA_OUT=""
+  unset OLLAMA_API_KEY AUTOFIX_IMPLEMENTERS AUTOFIX_OLLAMA_MODEL AUTOFIX_DEFER_FALLBACK AUTOFIX_LINT_LEVEL AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_LANE AUTOFIX_TRUNK_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE AUTOFIX_ANALYZE_ONLY
   REFS_BEFORE="$(refs)"
 }
 # patch [--no-fix] <file>... -- the implementer's patch adds each <file>, alongside the a.dart
@@ -289,6 +291,29 @@ check "  never opens a PR"                     never gh "pr create"
 setup; export STUB_CLAUDE_OUT="[$LIMIT_RESULT]" AUTOFIX_DEFER_FALLBACK=1000; run
 check "a limit with no reset time: exits 75"   rc_is 75
 check "  resumes after the flat fallback"      sh -c "t=\$(sed -n 's/^RESUME_AT=//p' '$C/stdout'); [ \$((t - \$(date +%s))) -ge 900 ] && [ \$((t - \$(date +%s))) -le 1100 ]"
+
+# Fallback: a limited claude hands the same task to the next implementer.
+setup; export STUB_CLAUDE_OUT="[$LIMIT_RESULT]" OLLAMA_API_KEY=k-oll; run
+check "claude limited, ollama key set: ollama implements, exits 0" rc_is 0
+check "  claude ran first, then ollama"          sh -c "[ \$(wc -l < '$C/log/claude') = 2 ] && [ -s '$C/log/ollama' ]"
+check "  ollama is reached over ollama.com with its own key" grep -q '^https://ollama.com k-oll ' "$C/log/ollama"
+check "  with the default ollama model"          grep -qx "glm-5.3" "$C/log/claude.args"
+check "  IMPLEMENTER names ollama and its model"    grep -q "IMPLEMENTER=ollama:glm-5.3" "$C/stdout"
+check "  and the PR opened"                      grep -q "^STATUS=opened:" "$C/stdout"
+check "  no deferral"                            sh -c "! grep -q '^STATUS=deferred' '$C/stdout'"
+
+setup; export STUB_CLAUDE_OUT="[$LIMIT_RESULT]" STUB_OLLAMA_OUT="[$LIMIT_RESULT]" OLLAMA_API_KEY=k-oll; run
+check "every implementer limited: exits 75"    rc_is 75
+check "  both were tried"                       sh -c "[ \$(wc -l < '$C/log/claude') = 2 ]"
+check "  says it deferred"                      said "STATUS=deferred"
+check "  never pushes"                          unpushed
+
+setup; export STUB_CLAUDE_OUT="[$LIMIT_RESULT]" OLLAMA_API_KEY=k-oll AUTOFIX_IMPLEMENTERS="claude agy"; run
+check "an implementer it cannot drive (agy) is skipped: exits 75" rc_is 75
+check "  and says so"                           grep -q "agy skipped" "$C/stderr"
+
+setup; export STUB_CLAUDE_OUT='[{"type":"result","subtype":"success","is_error":true,"result":"boom"}]' OLLAMA_API_KEY=k-oll; run
+check "a non-limit error does not fall through to ollama" sh -c "[ ! -e '$C/log/ollama' ]"
 
 setup; export STUB_CLAUDE_OUT='[{"type":"result","subtype":"success","is_error":true,"result":"boom"}]'; run
 check "an error that is not a limit still exits 1" rc_is 1
