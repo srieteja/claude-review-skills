@@ -56,6 +56,7 @@ cat > "$SB/bin/claude" <<'STUB'
 #!/usr/bin/env bash
 # autofix's implementer: edits the tree it is run in, and reports a clean result.
 echo call >> "$STUB_LOG/claude"
+[ -z "${STUB_CLAUDE_OUT:-}" ] || { printf '%s\n' "$STUB_CLAUDE_OUT"; exit 0; }   # e.g. a rate limit
 git apply "$STUB_PATCH"; echo '{"type":"result","is_error":false,"result":"done"}'
 STUB
 cat > "$SB/bin/dart" <<'STUB'

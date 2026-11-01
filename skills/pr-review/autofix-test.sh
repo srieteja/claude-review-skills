@@ -52,6 +52,7 @@ if [ -n "${STUB_COMMIT:-}" ]; then
 fi
 # What its own `dart pub get` leaves: neither is part of the fix.
 : > pkg/pubspec.lock; mkdir -p pkg/.dart_tool; echo x > pkg/.dart_tool/cache
+[ -z "${STUB_CLAUDE_OUT:-}" ] || { printf '%s\n' "$STUB_CLAUDE_OUT"; exit 0; }
 printf '{"type":"result","subtype":"%s","is_error":%s,"result":"done"}\n' \
   "${STUB_SUBTYPE:-success}" "${STUB_IS_ERROR:-false}"
 STUB
@@ -133,8 +134,8 @@ JSON
   FROZEN="$C/out/autofix"
   export STUB_LOG="$C/log" STUB_PATCH="$C/fix.patch" STUB_REPO=acme/widgets STUB_EXISTING="" \
          STUB_ME=me STUB_BLAME=bob STUB_EDIT_RC=0 STUB_DART_RC=0 STUB_ANALYZE_RC=0 STUB_ANALYZE_OLD="" STUB_ANALYZE_NEW="" STUB_CLAUDE_RC=0 STUB_CREATE_RC=0 STUB_DART_STDIN="" \
-         STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success STUB_CLAUDE_SH=""
-  unset AUTOFIX_LINT_LEVEL AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_LANE AUTOFIX_TRUNK_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE AUTOFIX_ANALYZE_ONLY
+         STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success STUB_CLAUDE_SH="" STUB_CLAUDE_OUT=""
+  unset AUTOFIX_DEFER_FALLBACK AUTOFIX_LINT_LEVEL AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_LANE AUTOFIX_TRUNK_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE AUTOFIX_ANALYZE_ONLY
   REFS_BEFORE="$(refs)"
 }
 # patch [--no-fix] <file>... -- the implementer's patch adds each <file>, alongside the a.dart
@@ -272,6 +273,26 @@ setup; export STUB_IS_ERROR=true STUB_SUBTYPE=error_max_budget_usd; run
 check "claude exits 0 but reports an error: exits 1" rc_is 1
 check "  even with a patch on disk"            unpushed
 check "  says why"                             grep -qF error_max_budget_usd "$C/stderr"
+
+# B140: an account's rate limit is the account's, not the PR's -- defer, never fail. The transcript
+# is the shape the CLI writes: a rejected rate_limit_event, then a 429 result.
+RESET=$(( $(date +%s) + 7200 ))
+LIMIT_RESULT='{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"hit your session limit"}'
+setup; export STUB_CLAUDE_OUT="[{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"rateLimitType\":\"seven_day\",\"resetsAt\":$((RESET + 9999)),\"unifiedWindows\":{\"five_hour\":{\"status\":\"allowed\",\"resetsAt\":$((RESET - 1))},\"seven_day\":{\"status\":\"rejected\",\"resetsAt\":$RESET}}}},$LIMIT_RESULT]"; run
+check "claude hits its rate limit: exits 75"   rc_is 75
+check "  says it deferred"                     said "STATUS=deferred"
+check "  resumes at the rejected window's reset, plus a minute" said "RESUME_AT=$((RESET + 60))"
+check "  names the limit, not 'exit 1'"        grep -qi "rate limit" "$C/stderr"
+check "  never pushes"                         unpushed
+check "  never opens a PR"                     never gh "pr create"
+
+setup; export STUB_CLAUDE_OUT="[$LIMIT_RESULT]" AUTOFIX_DEFER_FALLBACK=1000; run
+check "a limit with no reset time: exits 75"   rc_is 75
+check "  resumes after the flat fallback"      sh -c "t=\$(sed -n 's/^RESUME_AT=//p' '$C/stdout'); [ \$((t - \$(date +%s))) -ge 900 ] && [ \$((t - \$(date +%s))) -le 1100 ]"
+
+setup; export STUB_CLAUDE_OUT='[{"type":"result","subtype":"success","is_error":true,"result":"boom"}]'; run
+check "an error that is not a limit still exits 1" rc_is 1
+check "  and does not defer"                   sh -c "! grep -q '^STATUS=deferred' '$C/stdout'"
 
 setup; export STUB_NOOP=1; run
 check "claude changes nothing: exits 1"        rc_is 1

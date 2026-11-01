@@ -18,6 +18,8 @@ setup; export PR_REVIEW_FIX_AUTHORS=bob; run 7; keep; run 7 --ship; keep; export
 setup; run 7; echo "Please reset the cache." > "$C/why.md"; run 7 --decide request-changes --body-file "$C/why.md"; keep
 setup; printf '%s' "$unverifiable" > "$C/merged.json"; run 7; keep; run 7 --ship; keep; run 7 --ship; keep
 setup; export PR_REVIEW_FIX_AUTHORS=bob; run 7; echo moved000 > "$C/log/live"; run 7 --ship; keep; export PR_REVIEW_FIX_AUTHORS=alice
+setup; export STUB_CLAUDE_OUT='[{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1793300000}},{"type":"result","is_error":true,"api_error_status":429,"result":"limit"}]'
+run 7; keep; unset STUB_CLAUDE_OUT
 FILES="$SB/files.all"
 (cd "$SB" && find case*/store -type f) | sed 's|^case[0-9]*/store/[^/]*/[^/]*/[0-9]*/||' | sort -u > "$FILES"
 

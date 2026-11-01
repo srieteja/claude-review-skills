@@ -69,6 +69,7 @@ REVIEWER="${AUTOFIX_REVIEWER:-}"
 LANE="${AUTOFIX_LANE:-stacked}"
 TRUNK_REVIEWER="${AUTOFIX_TRUNK_REVIEWER:-author}"
 LINT_LEVEL="${AUTOFIX_LINT_LEVEL:-warning}"
+DEFER_FALLBACK="${AUTOFIX_DEFER_FALLBACK:-18000}"   # seconds to wait when a limit names no reset: one five-hour window
 # `-`, not `:-`: set-but-empty is the opt-out. read -a splits without globbing against $PWD.
 read -r -a ANALYZE_ONLY <<< "${AUTOFIX_ANALYZE_ONLY-tests/*}" || true
 PR="$1"; SHA="$2"; REPO_DIR="$3"; OUTDIR="$4"
@@ -77,7 +78,19 @@ die()    { printf '\033[31mautofix: %s\033[0m\n' "$*" >&2; exit 1; }
 say()    { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
 warn()   { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
 status() { echo "STATUS=$*"; }
-lower()  { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+# defer_if_limited -- an implementer its account refused to serve (rate limit, quota) failed on
+# the account, not the PR: exit 75 with when to try again, so nobody posts a verdict over it.
+defer_if_limited() {
+  local why reset
+  why="$(jq -L "$HERE" -r 'include "last-event"; quota_hit' "$WORK/claude.json" 2>/dev/null)" || return 0
+  [ -n "$why" ] || return 0
+  reset="$(jq -L "$HERE" -r 'include "last-event"; quota_reset // empty' "$WORK/claude.json" 2>/dev/null)" || reset=""
+  [ -n "$reset" ] && reset=$((reset + 60)) || reset=$(( $(date +%s) + DEFER_FALLBACK ))
+  warn "implementer hit a rate limit ($why) -- deferring until $(date -r "$reset" '+%Y-%m-%d %H:%M')"
+  status deferred; echo "RESUME_AT=$reset"
+  exit 75
+}
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # analyze_only <package-dir> -- whether AUTOFIX_ANALYZE_ONLY names it
 analyze_only() {
   local g
@@ -382,9 +395,9 @@ else
       # Exit 0 is not success: a run cut off by its budget or turn limit still exits 0, with
       # half an edit on disk that may well apply and pass.
       jq -L "$HERE" -e "$LAST_EVENT"' | select(.is_error != true)' "$WORK/claude.json" >/dev/null 2>&1 \
-        || { warn "implementer ended in error ($(jq -L "$HERE" -r "$LAST_EVENT"' | .subtype // "unknown"' "$WORK/claude.json" 2>/dev/null)) -- no PR (see $WORK/claude.json)"; exit 1; }
+        || { defer_if_limited; warn "implementer ended in error ($(jq -L "$HERE" -r "$LAST_EVENT"' | .subtype // "unknown"' "$WORK/claude.json" 2>/dev/null)) -- no PR (see $WORK/claude.json)"; exit 1; }
     else
-      warn "implementer exited non-zero -- no PR (see $WORK/claude.err)"; exit 1
+      defer_if_limited; warn "implementer exited non-zero -- no PR (see $WORK/claude.err)"; exit 1
     fi
     IMPLEMENTER="$MODEL"
   fi

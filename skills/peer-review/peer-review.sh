@@ -486,8 +486,10 @@ elif is_fix_author "$AUTHOR" && [ "$FORK" = false ]; then
   prepare_fix stacked
   case "$rc:$OUT" in
     0:*STATUS=prepared*) DECISION=fix; WHY="fix: $INTRO confirmed; $AUTHOR is a fix author and autofix prepared a patch" ;;
-    # Not this run's call to make: the head moved, or a fix PR is already out there.
-    *STATUS=stale*|*STATUS=exists:*) printf '%s\n' "$OUT"; exit "$rc" ;;
+    # Not this run's call to make: the head moved, a fix PR is already out there, or the
+    # implementer's account is rate-limited (autofix's 75, with RESUME_AT=) -- a limit says
+    # nothing about the PR, so no verdict is frozen over the fix it stopped.
+    *STATUS=stale*|*STATUS=exists:*|*STATUS=deferred*) printf '%s\n' "$OUT"; exit "$rc" ;;
     *) warn "autofix didn't prepare a fix for #$PR -- requesting changes instead"
        DECISION=request-changes
        WHY="request-changes: $INTRO confirmed; autofix didn't prepare a fix ($FIX_WHY)" ;;

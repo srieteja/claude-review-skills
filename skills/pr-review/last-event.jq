@@ -16,3 +16,13 @@ def quota_hit:
            and ((.api_error_status | IN(401, 402, 403, 429))
                 or (.result | tostring | test("hit your .*limit|usage limit"; "i"))))
   | .result // "API error \(.api_error_status)";
+
+# Epoch seconds at which the window that rejected the call reopens, else nothing. A rejection
+# names its window: the five-hour one reopens within hours, the seven-day one in days, so the
+# reset time is the only honest answer to "when can this run again".
+def quota_reset:
+  [ (if type == "array" then .[] else empty end)
+    | objects | select(.type == "rate_limit_event") | .rate_limit_info
+    | select(.status == "rejected")
+    | ([.unifiedWindows[]? | select(.status == "rejected") | .resetsAt] | max) // .resetsAt ]
+  | max;
