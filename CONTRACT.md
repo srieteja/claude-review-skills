@@ -21,6 +21,7 @@ This is what a program built on top of these skills can rely on: a scheduler tha
 - Prepare prints `ENGINE=`, then `STATUS=prepared` and `DECISION=`, plus a `LANE= STATUS=` line for each fix lane it prepared.
 - Ship prints one bare `STATUS=` line for an approve or request-changes, or one `LANE= STATUS=` line per lane for a fix.
 - Exit 0 means it settled. Exit 1 means it was refused (`stale`) or failed.
+- Exit 75 means the implementer hit a rate limit before a stacked fix could be written: `STATUS=deferred` and `RESUME_AT=<epoch>` (the window's reset plus a minute, or now plus `AUTOFIX_DEFER_FALLBACK` seconds, 5 h by default, when the reset is unknown). Nothing is frozen and nothing failed, so a wrapper pauses until `RESUME_AT` and runs the same head again. A side lane's deferral changes nothing: the decision is already frozen.
 
 ## Store
 
@@ -43,6 +44,8 @@ out     STATUS=prepared
 out     DECISION=(approve|request-changes|fix)
 out     STATUS=(approved|changes-requested|exists):https://[^ ]+
 out     STATUS=stale
+out     STATUS=deferred
+out     RESUME_AT=[0-9]+
 out     LANE=stacked STATUS=(opened|exists):https://[^ ]+
 out     LANE=stacked STATUS=stale
 
