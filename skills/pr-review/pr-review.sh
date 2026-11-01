@@ -290,13 +290,29 @@ BRIEF="$OUTDIR/pr${PR}-explainer.md"
 mkdir -p "$OUTDIR"
 [ -n "$SHA" ] && [ "$SHA" != "null" ] || die "stage 0: could not resolve head SHA"
 
-gh pr diff "$PR" > "$WORK/pr.diff" || die "stage 0: gh pr diff failed"
-[ -s "$WORK/pr.diff" ] || die "stage 0: empty diff"
+BASEREF="$(jq -r '.baseRefName' "$WORK/meta.json")"
+DIFF_ERR=""; DIFF_ERR="$(gh pr diff "$PR" 2>&1 > "$WORK/pr.diff")" || : > "$WORK/pr.diff"
 
 # A merged PR's head object may be absent locally; the pull ref always has it. Fetching the
 # pull ref also brings the branch's ancestors, which is what --sha needs.
 git -C "$ROOT" cat-file -e "$SHA" 2>/dev/null || \
   git -C "$ROOT" fetch --quiet origin "pull/$PR/head" || die "stage 0: cannot fetch pull/$PR/head"
+
+# GitHub's diff endpoint refuses past 300 files (HTTP 406); the clone computes the same diff.
+if [ ! -s "$WORK/pr.diff" ]; then
+  warn "gh pr diff failed (${DIFF_ERR:-no output}) -- building the diff from the clone"
+  git -C "$ROOT" fetch --quiet origin "$BASEREF" || die "stage 0: cannot fetch $BASEREF"
+  # Once merged, the head is an ancestor of the base and the range above is empty: use the
+  # merge commit's first parent (the base as it was) instead.
+  MC="$(gh pr view "$PR" --json mergeCommit -q '.mergeCommit.oid // empty' 2>/dev/null)"
+  if [ -n "$MC" ] && git -C "$ROOT" cat-file -e "$MC^2" 2>/dev/null; then
+    MB="$(git -C "$ROOT" rev-parse "$MC^1")"
+  else
+    MB="$(git -C "$ROOT" merge-base "origin/$BASEREF" "$SHA")" || die "stage 0: no merge-base for #$PR"
+  fi
+  git -C "$ROOT" diff "$MB...$SHA" > "$WORK/pr.diff" || die "stage 0: gh pr diff failed, and so did the local diff"
+fi
+[ -s "$WORK/pr.diff" ] || die "stage 0: empty diff"
 
 # --sha reviews an ancestor of the head (a commit before a fix landed, for regression
 # fixtures). The diff must move with the tree: a head diff against a pinned worktree makes
@@ -304,7 +320,6 @@ git -C "$ROOT" cat-file -e "$SHA" 2>/dev/null || \
 # class the worktree pin exists to prevent. meta.json feeds the prompt and the report header,
 # so its counts move too.
 if [ -n "$PIN" ]; then
-  BASEREF="$(jq -r '.baseRefName' "$WORK/meta.json")"
   git -C "$ROOT" cat-file -e "$PIN^{commit}" 2>/dev/null || die "stage 0: --sha $PIN not reachable"
   SHA="$(git -C "$ROOT" rev-parse "$PIN^{commit}")"
   MB="$(git -C "$ROOT" merge-base "origin/$BASEREF" "$SHA")" || die "stage 0: no merge-base for $PIN"

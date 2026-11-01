@@ -105,6 +105,13 @@ finding anthropic.t01-F1 tests/at_functional_test/test/certs_reload_test.dart 25
 "$HERE/route" --diff "$HERE/fixtures/route-2898.diff" "$SB/2898.json" > "$SB/out.json"
 check "#2898's finding: introduced"                      is anthropic.t01-F1 introduced
 
+# A 300-file PR's added lines outgrow one argv entry (#2415: "Argument list too long").
+awk 'BEGIN { print "diff --git a/lib/big.dart b/lib/big.dart\n--- a/lib/big.dart\n+++ b/lib/big.dart\n@@ -0,0 +1,150000 @@";
+             for (i = 1; i <= 150000; i++) print "+line " i }' > "$SB/big.diff"
+finding anthropic.big-F1 lib/big.dart 149999 "late in a huge diff" | jq -s . > "$SB/big.json"
+"$HERE/route" --diff "$SB/big.diff" "$SB/big.json" > "$SB/big-out.json"
+check "a diff too big for one argument: still routed"    [ "$(jq -r '.[0].route' "$SB/big-out.json")" = introduced ]
+
 printf '[]' > "$SB/empty.json"
 check "no findings: []"                                  [ "$("$HERE/route" --diff "$SB/pr.diff" "$SB/empty.json")" = "[]" ]
 check "a missing diff: exits non-zero"                   fails "$HERE/route" --diff "$SB/nope.diff" "$SB/empty.json"

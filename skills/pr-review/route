@@ -30,16 +30,17 @@ done
 
 # The head-side line number of every added line, as path:line. Headers are only read between
 # "diff --git" and the first hunk, so a removed line that reads "--- x" is not a new file.
-ADDED="$(awk '
+# Handed to jq as a file, not an argument: a 300-file PR's lines outgrow one argv entry.
+added_lines() { awk '
   /^diff --git / { hdr = 1; f = ""; next }
   hdr && /^\+\+\+ / { f = substr($0, 5); if (f == "/dev/null") f = ""; else sub(/^b\//, "", f); next }
   /^@@ / { hdr = 0; s = $0; sub(/^@@ -[0-9,]+ \+/, "", s); n = s + 0; next }
   hdr || f == "" { next }
   /^\+/ { print f ":" n; n++; next }
   /^ / || $0 == "" { n++ }
-' "$DIFF")"
+' "$DIFF"; }
 
-jq --arg added "$ADDED" '
+jq --rawfile added <(added_lines) '
   ($added | split("\n") | map(select(. != ""))) as $lines
   | ($lines | map({key: ., value: true}) | from_entries) as $set
   | ($lines | map(sub(":[0-9]+$"; "")) | unique) as $paths
