@@ -234,6 +234,9 @@ prepare_side() {
   case "$rc:$OUT" in
     0:*STATUS=prepared*) SIDE_OK=1 ;;
     0:*STATUS=dropped*|0:*STATUS=none*|0:*STATUS=exists:*) ;;
+    # Every implementer is rate-limited (autofix's 75, with RESUME_AT=): a limit says nothing
+    # about the PR, so nothing is frozen -- the decision would ship without the fix it pairs with.
+    75:*STATUS=deferred*) printf '%s\n' "$OUT"; exit 75 ;;
     *) warn "autofix didn't prepare the $1 lane's fix for #$PR ($FIX_WHY) -- the decision stands" ;;
   esac
 }
@@ -486,8 +489,10 @@ elif is_fix_author "$AUTHOR" && [ "$FORK" = false ]; then
   prepare_fix stacked
   case "$rc:$OUT" in
     0:*STATUS=prepared*) DECISION=fix; WHY="fix: $INTRO confirmed; $AUTHOR is a fix author and autofix prepared a patch" ;;
-    # Not this run's call to make: the head moved, or a fix PR is already out there.
-    *STATUS=stale*|*STATUS=exists:*) printf '%s\n' "$OUT"; exit "$rc" ;;
+    # Not this run's call to make: the head moved, a fix PR is already out there, or the
+    # implementer's account is rate-limited (autofix's 75, with RESUME_AT=) -- a limit says
+    # nothing about the PR, so no verdict is frozen over the fix it stopped.
+    *STATUS=stale*|*STATUS=exists:*|*STATUS=deferred*) printf '%s\n' "$OUT"; exit "$rc" ;;
     *) warn "autofix didn't prepare a fix for #$PR -- requesting changes instead"
        DECISION=request-changes
        WHY="request-changes: $INTRO confirmed; autofix didn't prepare a fix ($FIX_WHY)" ;;
@@ -497,6 +502,13 @@ elif is_fix_author "$AUTHOR"; then
 else
   DECISION=request-changes; WHY="request-changes: $INTRO confirmed; $AUTHOR is not a fix author"
 fi
+
+# Side lanes before the decision is frozen: one that defers (exit 75) leaves no verdict behind.
+SIDE_FROZEN=""
+for lane in trunk lint; do
+  prepare_side "$lane"
+  [ "$SIDE_OK" = 0 ] || SIDE_FROZEN="$SIDE_FROZEN $lane"
+done
 
 freeze "$DECISION" "$WHY"
 # The pipeline's own call and draft, kept before anyone edits them. Not on --decide: that is
@@ -510,7 +522,6 @@ case "$DECISION" in
   fix) say "read $REPORT and $OUTDIR/autofix/{fix.patch,title,body.md}, then: peer-review.sh $PR --ship" ;;
   *)   say "read $REPORT and $DEC/body.md, then: peer-review.sh $PR --ship" ;;
 esac
-for lane in trunk lint; do
-  prepare_side "$lane"
-  [ "$SIDE_OK" = 0 ] || say "and $(lane_dir "$lane")/{fix.patch,title,body.md}: --ship opens it too"
+for lane in $SIDE_FROZEN; do
+  say "and $(lane_dir "$lane")/{fix.patch,title,body.md}: --ship opens it too"
 done

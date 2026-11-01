@@ -33,6 +33,10 @@
 # and the PR body says so. Empty tests every package.
 # AUTOFIX_MODEL (default claude-opus-5-5), AUTOFIX_EFFORT (default high) and AUTOFIX_BUDGET
 # (USD, default 8.00, `none` uncaps) pick the implementer's run; AUTOFIX_CLAUDE swaps its binary.
+# AUTOFIX_IMPLEMENTERS (default "claude ollama") is tried in order: one its account rate-limits
+# (429, quota) hands the task to the next; ollama needs OLLAMA_API_KEY and AUTOFIX_OLLAMA_MODEL
+# (default glm-5.3), and the task and code go to ollama.com. Only when all are limited does it
+# print STATUS=deferred and RESUME_AT=<epoch> and exit 75 -- never a failure.
 #
 # stdout carries only these lines; progress goes to stderr:
 #   STATUS=none | exists:<url> | stale | retarget | dropped | prepared | opened:<url>
@@ -69,6 +73,13 @@ REVIEWER="${AUTOFIX_REVIEWER:-}"
 LANE="${AUTOFIX_LANE:-stacked}"
 TRUNK_REVIEWER="${AUTOFIX_TRUNK_REVIEWER:-author}"
 LINT_LEVEL="${AUTOFIX_LINT_LEVEL:-warning}"
+# Implementers tried in order; a rate-limited one hands the task to the next. claude is the
+# account's own login, ollama is claude -p routed to ollama.com (needs OLLAMA_API_KEY; the task
+# and the tree's code go to a third party). agy has no write-capable invocation here (refute and
+# pr-review only run it --sandbox, and it ignores cwd), so it is not an implementer.
+IMPLEMENTERS="${AUTOFIX_IMPLEMENTERS:-claude ollama}"
+OLLAMA_MODEL="${AUTOFIX_OLLAMA_MODEL:-glm-5.3}"
+DEFER_FALLBACK="${AUTOFIX_DEFER_FALLBACK:-18000}"   # seconds to wait when a limit names no reset: one five-hour window
 # `-`, not `:-`: set-but-empty is the opt-out. read -a splits without globbing against $PWD.
 read -r -a ANALYZE_ONLY <<< "${AUTOFIX_ANALYZE_ONLY-tests/*}" || true
 PR="$1"; SHA="$2"; REPO_DIR="$3"; OUTDIR="$4"
@@ -77,6 +88,17 @@ die()    { printf '\033[31mautofix: %s\033[0m\n' "$*" >&2; exit 1; }
 say()    { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
 warn()   { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
 status() { echo "STATUS=$*"; }
+# limit_hit -- whether the implementer that just ran was refused by its account (rate limit,
+# quota): that is the account's failure, not the PR's. Sets LIMIT_WHY and LIMIT_RESET (epoch
+# seconds, the flat fallback when the limit names none) for the caller to try the next implementer.
+limit_hit() {
+  LIMIT_WHY="$(jq -L "$HERE" -r 'include "last-event"; quota_hit' "$WORK/claude.json" 2>/dev/null)" || return 1
+  [ -n "$LIMIT_WHY" ] || return 1
+  LIMIT_RESET="$(jq -L "$HERE" -r 'include "last-event"; quota_reset // empty' "$WORK/claude.json" 2>/dev/null)" || LIMIT_RESET=""
+  [ -n "$LIMIT_RESET" ] && LIMIT_RESET=$((LIMIT_RESET + 60)) || LIMIT_RESET=$(( $(date +%s) + DEFER_FALLBACK ))
+}
+# fmt_epoch <epoch> -- GNU date first, BSD (macOS) as the fallback
+fmt_epoch() { date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$1" '+%Y-%m-%d %H:%M'; }
 lower()  { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # analyze_only <package-dir> -- whether AUTOFIX_ANALYZE_ONLY names it
 analyze_only() {
@@ -373,20 +395,53 @@ else
     # subcommands -- no git, no `dart format .` across every package. Code it writes still runs
     # under `dart test`: the untrusted-code risk the gate already carries. --setting-sources ""
     # keeps your settings' broader permissions, hooks and CLAUDE.md out of an unattended run.
-    if ( cd "$IMPL" && "$CLAUDE" -p "$(cat "$WORK/task.md")" \
-           --model "$MODEL" --effort "$EFFORT" --output-format json \
-           --strict-mcp-config --setting-sources "" --permission-mode acceptEdits \
-           ${BUDGET:+--max-budget-usd "$BUDGET"} \
-           --allowedTools Read Edit Write Glob Grep "Bash(dart test:*)" "Bash(dart pub get:*)" "Bash(dart analyze:*)" \
-       ) > "$WORK/claude.json" 2>"$WORK/claude.err"; then
-      # Exit 0 is not success: a run cut off by its budget or turn limit still exits 0, with
-      # half an edit on disk that may well apply and pass.
-      jq -L "$HERE" -e "$LAST_EVENT"' | select(.is_error != true)' "$WORK/claude.json" >/dev/null 2>&1 \
-        || { warn "implementer ended in error ($(jq -L "$HERE" -r "$LAST_EVENT"' | .subtype // "unknown"' "$WORK/claude.json" 2>/dev/null)) -- no PR (see $WORK/claude.json)"; exit 1; }
-    else
-      warn "implementer exited non-zero -- no PR (see $WORK/claude.err)"; exit 1
+    # An implementer the account refuses is skipped, not failed: the next one gets the same task
+    # on a fresh tree. Only when every one is limited or unavailable is the run deferred (75),
+    # to the earliest reset. Any other failure is the PR's and exits 1 as before.
+    IMPLEMENTER=""; DEFER_AT=""; DEFER_WHY=""
+    for impl in $IMPLEMENTERS; do
+      case "$impl" in
+        claude) wrap=""; m="$MODEL" ;;
+        ollama)
+          [ -n "${OLLAMA_API_KEY:-}" ] || { warn "implementer ollama skipped: OLLAMA_API_KEY is unset"; continue; }
+          wrap=ollama_env; m="$OLLAMA_MODEL" ;;
+        *) warn "implementer $impl skipped: not an implementer autofix can drive (claude|ollama)"; continue ;;
+      esac
+      if [ -n "$DEFER_AT" ]; then
+        say "implementer limited ($DEFER_WHY) -- trying $impl ($m)"
+        git -C "$IMPL" reset --quiet --hard "$BASE_SHA" && git -C "$IMPL" clean -fdxq
+      fi
+      # acceptEdits confines its own writes to this tree, and its only shell is three dart
+      # subcommands -- no git, no `dart format .` across every package. Code it writes still runs
+      # under `dart test`: the untrusted-code risk the gate already carries. --setting-sources ""
+      # keeps your settings' broader permissions, hooks and CLAUDE.md out of an unattended run.
+      ok=0
+      if ( cd "$IMPL" && MODEL="$m" $wrap "$CLAUDE" -p "$(cat "$WORK/task.md")" \
+             --model "$m" --effort "$EFFORT" --output-format json \
+             --strict-mcp-config --setting-sources "" --permission-mode acceptEdits \
+             ${BUDGET:+--max-budget-usd "$BUDGET"} \
+             --allowedTools Read Edit Write Glob Grep "Bash(dart test:*)" "Bash(dart pub get:*)" "Bash(dart analyze:*)" \
+         ) > "$WORK/claude.json" 2>"$WORK/claude.err"; then
+        # Exit 0 is not success: a run cut off by its budget or turn limit still exits 0, with
+        # half an edit on disk that may well apply and pass.
+        if jq -L "$HERE" -e "$LAST_EVENT"' | select(.is_error != true)' "$WORK/claude.json" >/dev/null 2>&1; then ok=1
+        elif ! limit_hit; then
+          warn "implementer ended in error ($(jq -L "$HERE" -r "$LAST_EVENT"' | .subtype // "unknown"' "$WORK/claude.json" 2>/dev/null)) -- no PR (see $WORK/claude.json)"; exit 1
+        fi
+      elif ! limit_hit; then
+        warn "implementer exited non-zero -- no PR (see $WORK/claude.err)"; exit 1
+      fi
+      if [ "$ok" = 1 ]; then IMPLEMENTER="$m"; [ "$impl" = claude ] || IMPLEMENTER="$impl:$m"; break; fi
+      warn "implementer $impl hit a rate limit ($LIMIT_WHY)"
+      if [ -z "$DEFER_AT" ] || [ "$LIMIT_RESET" -lt "$DEFER_AT" ]; then DEFER_AT="$LIMIT_RESET"; fi
+      DEFER_WHY="$impl: $LIMIT_WHY"
+    done
+    if [ -z "$IMPLEMENTER" ]; then
+      [ -n "$DEFER_AT" ] || { warn "no implementer available in AUTOFIX_IMPLEMENTERS=\"$IMPLEMENTERS\" -- no PR"; exit 1; }
+      warn "every available implementer is rate-limited -- deferring until $(fmt_epoch "$DEFER_AT")"
+      status deferred; echo "RESUME_AT=$DEFER_AT"
+      exit 75
     fi
-    IMPLEMENTER="$MODEL"
   fi
 
   # The patch is everything against the lane's base, committed or not. pub get's lockfile and

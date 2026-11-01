@@ -287,6 +287,17 @@ check "  no decision"                              silent DECISION
 setup; author carol; export STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")" STUB_AUTOFIX_OUT=STATUS=exists:https://x/pull/5; run 7
 check "a fix PR already exists: relayed"           said "STATUS=exists:https://x/pull/5"
 check "  no decision"                              silent DECISION
+# B140: a limited implementer must not turn into a verdict -- nothing frozen, nothing to ship.
+DEFERRED=$'STATUS=deferred\nRESUME_AT=1793300000'
+setup; author carol; export STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")" STUB_AUTOFIX_OUT="$DEFERRED" STUB_AUTOFIX_RC=75; run 7
+check "autofix deferred on a rate limit: exits 75"   rc_is 75
+check "  relays deferred"                           said "STATUS=deferred"
+check "  and when to resume"                        said "RESUME_AT=1793300000"
+check "  no decision"                               silent DECISION
+check "  nothing frozen for --ship to post"         absent "$INT/decision" "$INT/autofix"
+setup; export STUB_REVIEW="$(merged "$(pre CONFIRMED p1)")" STUB_AUTOFIX_OUT_trunk="$DEFERRED" STUB_AUTOFIX_RC_trunk=75; run 7
+check "the trunk lane deferred too: exits 75"        rc_is 75
+check "  no verdict without its fix"                silent DECISION
 
 setup; mkdir -p "$INT/decision" "$INT/autofix" "$REG/decision"; touch "$INT/autofix/left-over"
 echo "$REV" > "$REG/decision/sha"; echo approve > "$REG/decision/decision"; export STUB_ENGINE_RC=3; run 7
