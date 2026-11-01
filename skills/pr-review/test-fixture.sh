@@ -66,7 +66,8 @@ out() { if [ -n "$q" ]; then jq -r "$q"; else cat; fi; }
 case "$1 $2" in
   "pr view")   [ -f "$dir/pr$3.json" ] || { echo "no pull requests found for $3" >&2; exit 1; }
                out < "$dir/pr$3.json" ;;
-  "pr diff")   git diff "origin/trunk...refs/remotes/origin/pr$3" ;;
+  "pr diff")   [ -z "${FIXTURE_GH_DIFF_FAIL:-}" ] || { echo "could not find pull request diff: HTTP 406: the diff exceeded the maximum number of files (300)" >&2; exit 1; }
+               git diff "origin/trunk...refs/remotes/origin/pr$3" ;;
   "repo view") echo '{"nameWithOwner":"acme/widgets","name":"widgets"}' | out ;;
   "api user")  printf '{"login":"%s"}\n' "${FIXTURE_ME:-reviewer}" | out ;;
   *)           echo "gh stub: unhandled: $*" >&2; exit 64 ;;

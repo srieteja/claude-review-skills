@@ -410,6 +410,14 @@ check "  before stage 1 spends anything" absent "$SANDBOX/lock.log" 'stage 1'
 check "  and the holder's lock is left alone" test "$(readlink "$LOCK")" = "$$"
 rm -f "$LOCK"
 
+# ------------------------------------------------------------------ diff past GitHub's cap
+echo "diff — GitHub refuses past 300 files"
+FIXTURE_GH_DIFF_FAIL=1 PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" \
+  "$HERE/pr-review.sh" "$PIN_PR" --no-cache --no-brief > "$SANDBOX/bigdiff.log" 2>&1 || true
+check "a diff GitHub refuses is built from the clone" grep -q 'building the diff from the clone' "$SANDBOX/bigdiff.log"
+check "  without dying at stage 0" absent "$SANDBOX/bigdiff.log" 'stage 0: gh pr diff failed'
+check "  and the review goes on" grep -q 'stage 1' "$SANDBOX/bigdiff.log"
+
 # ------------------------------------------------------------------ intense preset
 echo "intense preset — two finders, ollama refuter, evidence burden"
 DEFAULT_SUM="$(cksum < "$REPORT")"
