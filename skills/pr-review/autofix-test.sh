@@ -19,7 +19,11 @@ printf '%s\n' "$*" >> "$STUB_LOG/gh"
 case "$1 $2" in
   "repo view") echo "$STUB_REPO" ;;
   "pr view")   echo "$STUB_PRVIEW" ;;
-  "pr list")   [ -z "${STUB_EXISTING:-}" ] || echo "$STUB_EXISTING" ;;
+  "pr list")
+    case "$*" in
+      *headRefName*) echo "${STUB_OPEN_FIXES:-[]}" ;;   # the open fix PRs, any head: url,headRefName
+      *) [ -z "${STUB_EXISTING:-}" ] || echo "$STUB_EXISTING" ;;
+    esac ;;
   "pr create")
     [ "${STUB_CREATE_RC:-0}" = 0 ] || exit "$STUB_CREATE_RC"
     while [ $# -gt 0 ]; do
@@ -93,6 +97,11 @@ export PATH="$SB/bin:$PATH" REVIEW_SKILLS_CONFIG="$SB/no-config"
 prlist() {  # prlist <number>:<state>... -- gh pr list --json url,state, in that order
   local out="" p
   for p in "$@"; do out="$out${out:+,}{\"url\":\"https://github.com/acme/widgets/pull/${p%%:*}\",\"state\":\"${p#*:}\"}"; done
+  echo "[$out]"
+}
+openfix() {  # openfix <number>:<branch>... -- gh pr list --state open --json url,headRefName
+  local out="" p
+  for p in "$@"; do out="$out${out:+,}{\"url\":\"https://github.com/acme/widgets/pull/${p%%:*}\",\"headRefName\":\"${p#*:}\"}"; done
   echo "[$out]"
 }
 prview() {  # prview <isCrossRepository> <headRefOid> [state] [file] -- alice's PR from feature-x into main, changing <file>
@@ -354,6 +363,18 @@ setup; git -C "$C/repo" push -q origin "$SHA:refs/heads/fix/pr7-review-findings-
 check "an earlier head's fix branch on origin: opens another" said "STATUS=opened:$URL"
 check "  on this head's branch"                pushed_file_is new
 check "  leaving the earlier one alone"        [ "$(git --git-dir="$C/remotes/acme/widgets.git" rev-parse fix/pr7-review-findings-0123456789ab)" = "$SHA" ]
+
+echo "trunk lane: an open fix PR for an earlier head"
+setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk STUB_OPEN_FIXES="$(openfix 50:fix/pr7-preexisting-0123456789ab)"; run
+check "open trunk fix PR for an earlier head: exists" said "STATUS=exists:https://github.com/acme/widgets/pull/50"
+check "  never calls claude"                   [ "$(calls claude)" = 0 ]
+check "  never pushes"                         unpushed
+
+setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk STUB_OPEN_FIXES="$(openfix 50:fix/pr7-review-findings-0123456789ab 51:fix/pr70-preexisting-0123456789ab 52:fix/pr7-lint-0123456789ab)"; run
+check "open fix PRs of another lane or PR: opens its own" said "STATUS=opened:$URL"
+
+setup; route introduced; export STUB_OPEN_FIXES="$(openfix 50:fix/pr7-review-findings-0123456789ab)"; run
+check "stacked lane: an earlier head's open PR still never blocks" said "STATUS=opened:$URL"
 
 echo "guards"
 setup; export STUB_PRVIEW="$(prview true "$SHA")"; run

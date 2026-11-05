@@ -199,8 +199,9 @@ fi
 
 # One fix branch per reviewed head and lane, so one fix PR each, whichever path opened it. Any
 # PR on it, in any state, ends the run: these same findings are already open, merged, or a
-# human's no. A fix PR for an earlier head, open or not, never blocks this one -- a valid
-# finding is a valid finding.
+# human's no. A fix PR for an earlier head never blocks this one -- a valid finding is a valid
+# finding -- except an open one in the trunk lane: its findings describe trunk, which the PR's
+# head moving doesn't change, so that PR is these same findings.
 case "$LANE" in
   stacked) BRANCH="fix/pr${PR}-review-findings-${SHA:0:12}" ;;
   trunk)   BRANCH="fix/pr${PR}-preexisting-${SHA:0:12}" ;;
@@ -208,6 +209,11 @@ case "$LANE" in
 esac
 EXISTING="$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json url | jq -r '.[0].url // empty')" \
   || die "could not check for an existing fix PR on branch $BRANCH"
+if [ -z "$EXISTING" ] && [ "$LANE" = trunk ]; then
+  EXISTING="$(gh pr list --repo "$REPO" --state open --limit 1000 --json url,headRefName \
+      | jq -r --arg p "fix/pr${PR}-preexisting-" '[.[] | select(.headRefName | startswith($p))][0].url // empty')" \
+    || die "could not check for an open trunk fix PR for #$PR"
+fi
 if [ -n "$EXISTING" ]; then
   say "a fix PR already exists for #$PR: $EXISTING -- not opening another"
   status "exists:$EXISTING"; exit 0
