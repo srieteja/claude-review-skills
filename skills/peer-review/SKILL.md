@@ -59,7 +59,7 @@ flowchart LR
 | `STATUS=prepared` + `DECISION=approve` | nothing CONFIRMED, every finding checked, every slice reviewed. UNVERIFIABLE findings don't block it — say so when relaying. |
 | `STATUS=prepared` + `DECISION=fix` | a frozen fix in `autofix/`; on a merged PR, the trunk lane's in `autofix/trunk/` |
 | `STATUS=prepared` + `DECISION=request-changes` | CONFIRMED findings, frozen into `decision/body.md` |
-| `STATUS=stale` / `STATUS=exists:<url>` | from autofix: the head moved, or a fix PR for this head already exists (one for an earlier head doesn't count). Nothing decided. |
+| `STATUS=stale` / `STATUS=exists:<url>` | from autofix: the head moved, or a fix PR for this head already exists (one for an earlier head doesn't count, except an open trunk-lane one). Nothing decided. |
 | `LANE=<lane> STATUS=…` | one line per fix lane beside the decision: `stacked` (the fix above), `trunk` (confirmed findings already on the PR's base, frozen in `autofix/trunk/`, a fix PR against trunk), `lint` (with `AUTOFIX_LINT=1`). A side lane that fails or drops is reported, never the decision's outcome. |
 | `STATUS=merged-clean` | the PR merged with nothing confirmed, or the trunk lane found nothing left on its base. Nothing decided. (A trunk fix PR already open: `STATUS=exists:<url>`.) |
 | exit 1 | refused, failed, a finding left unchecked (`ERROR` or no verdict), or a clean review that skipped slices. Nothing decided — re-run. |
