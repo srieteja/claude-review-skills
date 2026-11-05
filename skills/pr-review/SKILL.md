@@ -347,7 +347,7 @@ the branch moves.
 | `stage 1: no findings.json was written` | Opus answered in prose instead of writing the file. Rerun; if it repeats, `~/.claude/skills/pr-review/review.prompt` needs tightening. |
 | Everything CONFIRMED | The refutation prompt has stopped discriminating. Re-run the T1b fixture (a fabricated mechanism on a real line) before trusting any output. |
 | Everything REFUTED | Usually a tree mismatch — check the head SHA in the report matches the PR. |
-| `ERROR` verdicts | Read `$WORK/claims/<id>.err.<attempt>` in the kept work dir. Usually a validator timeout; raise `PR_REVIEW_REFUTE_TIMEOUT`. |
+| `ERROR` verdicts | The verdict's `reason` ends with the validator's own error line. `no such host` / `network issue` / `not recognized as a known model` = agy had no route to Google (every agy model is skipped for the run; re-run stage 2 once online). No error line = a timeout; raise `PR_REVIEW_REFUTE_TIMEOUT`. Full stderr: `$WORK/claims/<id>.err.<attempt>`. |
 | `one finder per transport` | `PR_REVIEW_FINDERS` names a transport twice. Finder ids are tagged by transport, so two finders on one transport would collide. |
 | Many `UNVERIFIABLE` | Evidence burden only. The refuter could neither confirm nor disprove — often a mechanism through a dependency or server. Read each reason; they are unchecked claims, not confirmed ones. |
 

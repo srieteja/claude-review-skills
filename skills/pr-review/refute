@@ -163,9 +163,17 @@ say "${CHAIN// / -> } refuting $COUNT claim(s), $BURDEN burden, $JOBS at a time"
 # result event.
 unavailable() { # transport err-file raw-file
   case "$1" in
-    agy) agy_quota_hit "$2" ;;
+    agy) agy_quota_hit "$2" || agy_unreachable "$2" ;;
     *) jq -e -L "$HERE" 'include "last-event"; quota_hit' "$3" >/dev/null 2>&1 ;;
   esac
+}
+# Why the call failed, for the verdict's reason: agy says on stderr, claude in its result
+# event. At most one line, so a stack of transient failures stays readable.
+why_failed() { # transport err-file raw-file
+  case "$1" in
+    agy) agy_error_line "$2" ;;
+    *) jq -r -L "$HERE" 'include "last-event"; last_event | .result // empty' "$3" 2>/dev/null | grep -m1 . ;;
+  esac | cut -c1-200 || true
 }
 
 # --cross never hands a claim to the family that made it: that model shares the finder's
@@ -212,7 +220,7 @@ refute_one() {
   # far have been transient rather than the model declining. Two silent failures is a real
   # signal. A quota error is neither -- that model is spent for hours or days -- so it goes
   # straight to the next model, and leaves a marker so claims still queued skip it.
-  attempt=0; spent=""; quota=0
+  attempt=0; spent=""; quota=0; why=""
   for e in $CHAIN; do
     eligible "$id" "$e" || continue
     m="${e#*:}"
@@ -220,18 +228,26 @@ refute_one() {
     for try in 1 2; do
       attempt=$((attempt + 1))
       ask_validator "$id" "$attempt" "$e" && break 2
-      if unavailable "${e%%:*}" "$WORK/claims/$id.err.$attempt" "$WORK/claims/$id.raw.$attempt"; then
-        : > "$WORK/exhausted/$e"; spent="${spent:+$spent, }$m"; quota=1; continue 2
+      err="$WORK/claims/$id.err.$attempt"; raw="$WORK/claims/$id.raw.$attempt"
+      why="$(why_failed "${e%%:*}" "$err" "$raw")"
+      if unavailable "${e%%:*}" "$err" "$raw"; then
+        : > "$WORK/exhausted/$e"; spent="${spent:+$spent, }$m"; quota=1
+        # No route to Google spends every agy model at once, not just this one.
+        if [ "${e%%:*}" = agy ] && agy_unreachable "$err"; then
+          for x in $CHAIN; do case "$x" in agy:*) : > "$WORK/exhausted/$x" ;; esac; done
+        fi
+        continue 2
       fi
     done
     quota=0; break
   done
   if [ ! -s "$WORK/verdicts/$id.json" ]; then
     if [ "$quota" = 1 ]; then
-      reason="every validator model was out of quota or unavailable ($spent); this claim was NOT checked"
+      reason="every validator model was out of quota or unavailable ($spent)"
     else
-      reason="the validator produced no structured verdict on two attempts; this claim was NOT checked"
+      reason="the validator produced no structured verdict on two attempts"
     fi
+    reason="$reason${why:+: $why}; this claim was NOT checked"
     jq -nc --arg id "$id" --arg r "$reason" '{id:$id, verdict:"ERROR", evidence:"", reason:$r}' \
       > "$WORK/verdicts/$id.json"
   fi

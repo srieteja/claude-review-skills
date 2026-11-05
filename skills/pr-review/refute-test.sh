@@ -26,6 +26,18 @@ case " ${STUB_QUOTA_MODELS:-} " in *" $m "*)
   echo 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached.","status":"RESOURCE_EXHAUSTED","error_code":429}' >&2
   echo '{"status":"ERROR","response":"read a.dart"}'; exit 1 ;;
 esac
+# STUB_OFFLINE mirrors agy with no route to Google (work dirs of 2026-11-04): dns is the
+# AGY_ERROR dial failure after a long wait; model is the "not recognized" refusal agy gives
+# a valid id when the registry it validates against never loaded. Neither is a 429.
+case "${STUB_OFFLINE:-}" in
+  dns)
+    echo 'error: There was a network issue connecting to the server, please try again.' >&2
+    echo 'AGY_ERROR: {"short_error":"agent executor error: generating and executing: request failed: Post \"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: no such host","status":"UNKNOWN","error_code":2,"code_kind":"grpc","retryable":true}' >&2
+    echo '{"status":"ERROR","response":"","error":"There was a network issue connecting to the server, please try again."}'; exit 1 ;;
+  model)
+    echo "error: invalid model selection (--model \"$m\" --effort \"\"): model $m is not recognized as a known model or custom model in settings" >&2
+    echo '{"status":"ERROR","response":"","error":"invalid model selection","num_turns":0,"finished_reason":"error"}'; exit 1 ;;
+esac
 if [ "${STUB_FAIL:-0}" = 1 ]; then
   echo 'AGY_ERROR: {"short_error":"INTERNAL (code 500)","status":"INTERNAL","error_code":500}' >&2
   echo '{"status":"ERROR","response":"hit a 429 earlier"}'; exit 1
@@ -55,7 +67,7 @@ STUB
 chmod +x "$SB/bin/claude"
 export OLLAMA_API_KEY=stub
 export PATH="$SB/bin:$PATH" REVIEW_SKILLS_CONFIG="$SB/no-config"
-unset PR_REVIEW_REFUTER_FALLBACK STUB_QUOTA_MODELS STUB_FAIL STUB_CLAUDE_STATUS STUB_CLAUDE_RESULT
+unset PR_REVIEW_REFUTER_FALLBACK STUB_QUOTA_MODELS STUB_FAIL STUB_OFFLINE STUB_CLAUDE_STATUS STUB_CLAUDE_RESULT
 
 claims() { # id...
   printf '{"findings":['
@@ -97,6 +109,29 @@ check "  reason says quota"                         grep -q quota "$W/verdicts/F
 STUB_FAIL=1 run --model m1
 check "non-quota failure: one retry, same model"    [ "$(calls)" = "m1 m1" ]
 check "  no fallback, claim is ERROR"               [ "$(verdict F1 verdict)" = ERROR ]
+check "  reason carries agy's error"                grep -q 'INTERNAL (code 500)' "$W/verdicts/F1.json"
+
+echo "agy unreachable"
+export PR_REVIEW_REFUTER_FALLBACK="m2 m3"
+STUB_OFFLINE=dns run --model m1
+check "dns failure: exits 0"                        [ "$RC" = 0 ]
+check "  one call: no retry, no agy fallback"       [ "$(calls)" = m1 ]
+check "  claim is ERROR"                            [ "$(verdict F1 verdict)" = ERROR ]
+check "  reason says unavailable"                   grep -q unavailable "$W/verdicts/F1.json"
+check "  reason carries the dial error"             grep -q 'no such host' "$W/verdicts/F1.json"
+check "  reason names every agy model skipped"      grep -q 'm1, m2, m3' "$W/verdicts/F1.json"
+
+STUB_OFFLINE=model run --model m1
+check "model not recognized: one call"              [ "$(calls)" = m1 ]
+check "  claim is ERROR"                            [ "$(verdict F1 verdict)" = ERROR ]
+check "  reason carries the refusal"                grep -q 'not recognized as a known model' "$W/verdicts/F1.json"
+
+claims F1 F2 > "$SB/f.json"
+STUB_OFFLINE=dns run --model m1
+check "later claims skip agy entirely"              [ "$(calls)" = m1 ]
+check "  and are ERROR too"                         [ "$(verdict F2 verdict)" = ERROR ]
+claims F1 > "$SB/f.json"
+export PR_REVIEW_REFUTER_FALLBACK="m2 m3"
 
 run --model m1
 check "no failure: one call"                        [ "$(calls)" = m1 ]
@@ -139,6 +174,14 @@ claims anthropic.c01-F1 > "$SB/f.json"
 STUB_CLAUDE_STATUS=403 STUB_QUOTA_MODELS=gemini-x run $OLL --cross
 check "cross model also dead: finding stays ERROR"  [ "$(verdict anthropic.c01-F1 verdict)" = ERROR ]
 check "  never falls to its own family"             [ "$(calls)" = "claude gemini-x" ]
+
+STUB_CLAUDE_STATUS=403 STUB_OFFLINE=dns run $OLL --cross
+check "cross model unreachable: finding is ERROR"   [ "$(verdict anthropic.c01-F1 verdict)" = ERROR ]
+check "  one agy call, no agy retry"                [ "$(calls)" = "claude gemini-x" ]
+check "  reason carries the dial error"             grep -q 'no such host' "$W/verdicts/anthropic.c01-F1.json"
+
+STUB_CLAUDE_STATUS=500 STUB_CLAUDE_RESULT="Internal server error" run $OLL
+check "claude failure: reason carries its result"   grep -q 'Internal server error' "$W/verdicts/anthropic.c01-F1.json"
 
 claims c01-F1 > "$SB/f.json"
 STUB_CLAUDE_STATUS=403 run $OLL --cross

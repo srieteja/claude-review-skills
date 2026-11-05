@@ -17,3 +17,20 @@ agy_quota_hit() { # err-file
 agy_models() { # list...
   printf '%s\n' "$*" | tr ', ' '\n\n' | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//'
 }
+
+# agy with no route to Google at all (seen 2026-11-04, PRs 2410/2421/2428): a dial or DNS
+# failure in AGY_ERROR after the full timeout, or -- since agy validates --model against a
+# registry it fetches at startup -- a valid id refused as "not recognized". Neither is the
+# model's fault, so every agy model is spent for this run, and a retry only waits again.
+agy_unreachable() { # err-file
+  grep -qE 'network issue|dial tcp|no such host|not recognized as a known model' "$1" 2>/dev/null
+}
+
+# The one line of agy's stderr worth putting in front of a human: AGY_ERROR's short_error
+# minus its executor boilerplate, else the first `error:` line. Empty when agy said nothing.
+agy_error_line() { # err-file
+  { grep '^AGY_ERROR:' "$1" 2>/dev/null | head -1 | sed 's/^AGY_ERROR: *//' | jq -r '.short_error // empty' 2>/dev/null \
+      | sed 's/^agent executor error: generating and executing: //'
+    grep -m1 '^error:' "$1" 2>/dev/null | sed 's/^error: *//'
+  } | grep -m1 . || true
+}

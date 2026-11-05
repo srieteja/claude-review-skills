@@ -142,6 +142,8 @@ The ollama refuter did read the pinned tree. TRUE_CLAIM is false in the live tre
 - **agy quota is per model.** A 429 `RESOURCE_EXHAUSTED` from one model leaves the others runnable, and the reset can be days away.
   - `refute` reads only the `AGY_ERROR:` line on stderr (`agy-quota.sh`). A quota hit moves the claim to the next model in `PR_REVIEW_REFUTER_FALLBACK` instead of spending its retry. It also drops `$WORK/exhausted/<model>`, so queued claims skip that model.
   - A claude refuter (`anthropic:` or `ollama:`) reports a spent, unpaid or signed-out account only in its result event; `quota_hit` in `last-event.jq` reads it, for refute and for stage 1 alike.
+- **agy offline spends every agy model at once.** With no route to Google, agy fails the call after the full timeout (`dial tcp ... no such host`), or refuses a valid `--model` as "not recognized" because it validates ids against a registry it fetches at startup. Neither is the model's fault, so `agy_unreachable` marks every `agy:*` chain entry exhausted on the first hit: one wasted timeout per run, not two per claim per model (2026-11-04: PRs 2410/2421/2428 burned both attempts on every claim).
+  - Every `ERROR` verdict's `reason` ends with the validator's error line (`agy_error_line`, or claude's result event), so the store says why a claim went unchecked without the work dir.
   - Any other failure keeps the old rule: one retry on the same model, then ERROR.
   - The fallback can change the burden calibration. A claim refuted by pro or opus wasn't judged by the flash model the burden was tuned on, so every verdict carries `.model`.
   - The agy *finder* in `/intense-review` does **not** fall back yet. A spent finder model shows up as a coverage gap.
