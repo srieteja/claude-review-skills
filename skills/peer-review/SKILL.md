@@ -45,7 +45,8 @@ flowchart LR
 | `PR_REVIEW_INTENSE_REFUTER` | the intense refuter (default: resolved, as `/intense-review` does). On ollama it is probed; of a finder's own family, the regular review runs |
 | `PR_REVIEW_INTENSE_DIR`, `PR_REVIEW_DIR` | the two stores (default `~/.reviews/_intense`, `~/.reviews`) |
 
-- **Refused before any spend:** a bot author, your own PR, a PR closed unmerged, `--post`/`--inline`/`--yes` (ship posts), `--sha` (the decision is about the live head).
+- **Your own PR** is reviewed and decided like anyone's. GitHub refuses an approval or change request from the author, so ship posts approve/request-changes as a `COMMENT` review (`STATUS=commented:<url>`); a fix PR asks no reviewer. Put yourself on `PR_REVIEW_FIX_AUTHORS` to get fix PRs on your own work.
+- **Refused before any spend:** a bot author, a PR closed unmerged, `--post`/`--inline`/`--yes` (ship posts), `--sha` (the decision is about the live head).
 
 ## Before you run it, tell the user
 

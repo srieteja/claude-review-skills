@@ -323,10 +323,6 @@ setup; mkdir -p "$REG/decision"; echo "$REV" > "$REG/decision/sha"; echo approve
 check "a review that succeeds in one store clears the other's earlier decision" absent "$REG/decision"
 
 echo "refused before spending on a review"
-setup; export STUB_ME=ALICE; run 7
-check "your own PR"                                rc_is 1
-check "  says why"                                 says "your own"
-check "  no probe, no review"                      [ "$(calls curl)$(calls intense-review.sh)$(calls pr-review.sh)" = 000 ]
 setup; export STUB_PRVIEW="$(prview app/dependabot true OPEN false)"; run 7
 check "bot author"                                 rc_is 1
 check "  says why"                                 says bot
@@ -407,6 +403,21 @@ check "  posts nothing"                            [ "$(posts)" = 0 ]
 setup; run 7; export STUB_POST_RC=1; run 7 --ship
 check "the post fails: exits 1"                    rc_is 1
 check "  not marked as posted, so a re-run retries" [ ! -e "$INT/decision/posted" ]
+
+# Your own PR is reviewed like anyone's, but GitHub refuses an approval or a change request
+# from its author, so the frozen decision goes out as a COMMENT review.
+setup; export STUB_ME=ALICE; run 7
+check "your own PR: reviewed"                      said "DECISION=approve"
+run 7 --ship
+check "  approve posts a COMMENT review"           logged gh "event=COMMENT"
+check "  relays it"                                said "STATUS=commented:$URL"
+setup; export STUB_ME=ALICE STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")"; run 7; run 7 --ship
+check "your own PR, request-changes: a COMMENT"    payload '.event == "COMMENT" and (.comments | length == 1)'
+check "  relays it"                                said "STATUS=commented:$URL"
+setup; author carol; export STUB_ME=carol STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")"; run 7
+check "your own PR, a fix author: fix"             said "DECISION=fix"
+run 7 --ship
+check "  asks no one to review it"                 logged autofix "MODE=ship FROZEN=$INT/autofix REVIEWER= ARGS=7 $REV $ROOT $INT"
 
 setup; run 7; mkdir -p "$REG/decision"; cp "$INT/decision/"* "$REG/decision/"; run 7 --ship
 check "a decision in both stores: refused"         rc_is 1

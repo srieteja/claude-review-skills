@@ -140,10 +140,11 @@ case "$STATE" in OPEN|MERGED) ;; *) die "#$PR is not open or merged ($STATE)" ;;
 [ "$STATE" = OPEN ] || [ -z "$DECIDE" ] || [ "$DECIDE" = fix ] || die "#$PR is merged -- only fix applies"
 # A fork's branch is outside this repo: nothing can be stacked on it, but trunk is still ours.
 FORK="$(printf '%s' "$META" | jq -r '.isCrossRepository')"
-# GitHub refuses a review of your own PR, and a fix PR on your own work is pointless. If the
-# lookup fails, carry on: GitHub still refuses at ship.
+# Your own PR is reviewed like anyone's. GitHub refuses an approval or a change request from
+# a PR's author, and a review request to them, so ship posts a COMMENT and asks no one. If the
+# lookup fails, OWN stays 0 and GitHub refuses at ship.
 ME="$(gh api user -q .login 2>/dev/null)" || ME=""
-[ -z "$ME" ] || [ "$(lower "$ME")" != "$(lower "$AUTHOR")" ] || die "#$PR is your own PR -- nothing to review for"
+OWN=0; [ -z "$ME" ] || [ "$(lower "$ME")" != "$(lower "$AUTHOR")" ] || OWN=1
 LIVE="$(printf '%s' "$META" | jq -r '.headRefOid')"
 REPO="$(repo_of_url "$(printf '%s' "$META" | jq -r '.url')")"
 pr_lock "$(printf '%s' "$META" | jq -r '.url')"; trap pr_unlock EXIT
@@ -314,7 +315,11 @@ fi
 # ship_review -- post the frozen approve or request-changes, once; its bare STATUS= line
 ship_review() {
   local event posted url
-  case "$DECISION" in approve) event=APPROVE; posted=approved ;; *) event=REQUEST_CHANGES; posted=changes-requested ;; esac
+  case "$OWN:$DECISION" in
+    1:*) event=COMMENT; posted=commented ;;
+    0:approve) event=APPROVE; posted=approved ;;
+    *) event=REQUEST_CHANGES; posted=changes-requested ;;
+  esac
   if [ -s "$DEC/posted" ]; then
     say "#$PR already has this decision out: $(cat "$DEC/posted")"; echo "STATUS=exists:$(cat "$DEC/posted")"; return 0
   fi
@@ -328,9 +333,12 @@ ship_review() {
     warn "#$PR head is now ${LIVE:0:12}, not the reviewed ${SHA:0:12} -- re-run the review"
     echo "STATUS=stale"; return 1
   fi
-  # GitHub takes an empty approval but not an empty change request.
-  [ "$event" = APPROVE ] || grep -q '[^[:space:]]' "$DEC/body.md" 2>/dev/null \
-    || die "$DEC/body.md is blank -- a change request needs one"
+  # GitHub takes an empty approval but not an empty change request or comment. A blank
+  # approval of your own PR says so in words instead.
+  if ! grep -q '[^[:space:]]' "$DEC/body.md" 2>/dev/null; then
+    [ "$DECISION" = approve ] || die "$DEC/body.md is blank -- a change request needs one"
+    [ "$event" = APPROVE ] || echo "Reviewed at \`${SHA:0:12}\`: nothing confirmed." > "$DEC/body.md"
+  fi
   # body.md as edited is the one control surface: a frozen comment goes out only while the
   # body still names its finding. A freeze with no review.json (approve, a hand-written body,
   # one from before inline comments) posts the body alone. commit_id pins the review to the
@@ -355,7 +363,7 @@ ship_lane() {
   if [ -s "$mark" ]; then
     say "#$PR's $1 fix PR is already out: $(cat "$mark")"; echo "LANE=$1 STATUS=exists:$(cat "$mark")"; return 0
   fi
-  [ "$1" != stacked ] || who="$AUTHOR"
+  [ "$1" != stacked ] || [ "$OWN" = 1 ] || who="$AUTHOR"
   rc=0
   OUT="$(AUTOFIX_MODE=ship AUTOFIX_LANE="$1" AUTOFIX_FROZEN="$(lane_dir "$1")" AUTOFIX_REVIEWER="$who" \
     "$AUTOFIX" "$PR" "$SHA" "$ROOT" "$OUTDIR")" || rc=$?

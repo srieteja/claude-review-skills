@@ -55,9 +55,9 @@ check "alice pushed after the review: refused"     rc_is 1
 check "  reports stale"                            said "LANE=stacked STATUS=stale"
 check "  nothing pushed"                           unpushed
 
-setup; export STUB_ME=ALICE; run 7
-check "your own PR: refused"                       rc_is 1
-check "  before any review"                        [ "$(calls intense)" = 0 ]
+setup; export STUB_ME=ALICE; run 7; run 7 --ship
+check "your own PR: the fix still opens"           said "LANE=stacked STATUS=opened:$URL"
+check "  asking no one to review it"               never gh "--add-reviewer"
 
 echo "decisions that post a review"
 setup; printf '%s' "$unverifiable" > "$C/merged.json"; run 7
