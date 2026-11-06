@@ -731,6 +731,11 @@ if [ "$COUNT" -eq 0 ]; then
     fi
     [ -n "$GAPS" ] && { echo; echo "> Slices that produced nothing:$GAPS. Those files went **unreviewed**."; echo ">$GAP_NOTES"; }
   } > "$OUT"
+  # The record follows the report: an earlier run's verdicts and inline payload must not
+  # outlive a clean headline, or the store contradicts itself.
+  echo '[]' > "$OUTDIR/merged.json"
+  cp "$WORK/meta.json" "$OUTDIR/meta.json"
+  rm -f "$OUTDIR/inline.json"
   say "wrote $OUT"
   exit 0
 fi

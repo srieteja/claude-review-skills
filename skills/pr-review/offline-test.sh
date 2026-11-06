@@ -347,6 +347,16 @@ env PR_REVIEW_DIR="$d" PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" \
 check "--findings: no claim that anything reviewed the diff" absent "$ZREPORT" 'reviewed the diff'
 check "  no plain No findings headline" absent "$ZREPORT" '^\*\*No findings\.\*\*'
 check "  the headline names the file it read" grep -q 'No findings.* in .*empty-findings.json' "$ZREPORT"
+# The store is a record, not just a report: a clean run must not leave an earlier run's
+# verdicts and inline payload beside a "No findings" headline.
+d="$SANDBOX/zero-stale"; mkdir -p "$d/$AUTHOR/widgets/$PIN_PR"
+echo '[{"id":"t01-F1","v":{"verdict":"ERROR"}}]' > "$d/$AUTHOR/widgets/$PIN_PR/merged.json"
+echo '{"headRefOid":"0000000"}' > "$d/$AUTHOR/widgets/$PIN_PR/meta.json"
+echo '{"comments":[{"body":"stale"}]}' > "$d/$AUTHOR/widgets/$PIN_PR/inline.json"
+zero_run stale
+check "zero findings replaces a stale merged.json"  test "$(jq length "$d/$AUTHOR/widgets/$PIN_PR/merged.json")" = 0
+check "  and the stale meta.json"                   test "$(jq -r .headRefOid "$d/$AUTHOR/widgets/$PIN_PR/meta.json")" != 0000000
+check "  and drops the stale inline payload"        test ! -e "$d/$AUTHOR/widgets/$PIN_PR/inline.json"
 
 # ------------------------------------------------------------- quota fail-fast
 # A session limit stops every slice on that account; waiting out the rest burns the stage-1
