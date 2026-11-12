@@ -7,7 +7,7 @@ Claude Code skills for reviewing GitHub PRs with more than one model family. Fin
 | Skill | Say | What you get |
 |---|---|---|
 | `pr-review` | `/pr-review 123` | A report of the findings that survived, plus a plain-language brief of the PR for you |
-| `intense-review` | `/intense-review 123` | The same with two finders at top effort, a third-family refuter under an evidence burden, and no dollar cap |
+| `intense-review` | `/intense-review 123` | The same with two finders, a third-family refuter under an evidence burden, and no dollar cap |
 | `peer-review` | `/peer-review 123` | A decision: **approve**, **request changes**, or a **fix PR** stacked on the author's. It posts only after you check it |
 
 ```mermaid
@@ -68,12 +68,12 @@ To choose models yourself:
 
 ```text
 $ review-skills models          # claude only
-  regular  anthropic:claude-opus-5-5@xhigh -> refuted by anthropic:claude-opus-5-5  (same family as a finder: weaker refutation)
-  intense  anthropic:claude-opus-5-5@max -> refuted by anthropic:claude-sonnet-5-5  (same family as a finder: weaker refutation)
+  regular  anthropic:claude-opus-5-5@medium -> refuted by anthropic:claude-opus-5-5  (same family as a finder: weaker refutation)
+  intense  anthropic:claude-opus-5-5@medium -> refuted by anthropic:claude-sonnet-5-5  (same family as a finder: weaker refutation)
 
 $ review-skills models          # claude, agy and ollama
-  regular  anthropic:claude-opus-5-5@xhigh -> refuted by agy:gemini-3.8-flash-high
-  intense  anthropic:claude-opus-5-5@max agy:gemini-3.8-flash-high -> refuted by ollama:glm-5.3-flash
+  regular  anthropic:claude-opus-5-5@medium -> refuted by agy:gemini-3.8-flash-high
+  intense  anthropic:claude-opus-5-5@medium agy:gemini-3.8-flash-high -> refuted by ollama:glm-5.3-flash
 ```
 
 ## Run from a checkout

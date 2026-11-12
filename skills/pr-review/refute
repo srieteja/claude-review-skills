@@ -209,7 +209,8 @@ eligible() { # id entry
 ask_validator() { # id attempt entry
   id="$1"; attempt="$2"; t="${3%%:*}"; m="${3#*:}"; eff=""
   case "$m" in *@*) eff="${m#*@}"; m="${m%@*}" ;; esac
-  effargs=(); [ "$t" != anthropic ] || [ -z "$eff" ] || effargs=(--effort "$eff")
+  # Every anthropic call is capped: a spec with no @effort runs at medium, never the CLI default.
+  effargs=(); [ "$t" != anthropic ] || effargs=(--effort "$(clamp_effort "${eff:-medium}")")
   # Every transport starts in the tree. agy additionally gets --add-dir; claude has no tool
   # that writes or runs anything (on ollama, the CLAUDE_CODE_SIMPLE surface minus Bash and
   # Edit). anthropic and ollama differ only in the environment that routes the call.

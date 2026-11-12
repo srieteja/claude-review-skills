@@ -524,7 +524,7 @@ check "ids carry the agy finder's tag" grep -q '"agy\.c0[0-9]-F1"' "$IMERGED"
 check "one finder's failed slice is a gap for that finder only" \
   grep -q 'no findings from: anthropic\.c02 —' "$SANDBOX/run3.log"
 check "the other finder still covered that slice" grep -q '"agy\.c02-F1"' "$IMERGED"
-check "the claude finder ran at --effort max" every claude-find '^arg=max$'
+check "the claude finder ran at --effort medium (never above)" every claude-find '^arg=medium$'
 check "the claude finder ran with no budget cap" never claude-find '^arg=--max-budget-usd$'
 check "the agy finder ran inside the tree" every agy-find '^cwd=.*/tree$'
 check "the agy finder was handed the findings schema" every agy-find '^arg=.*/findings\.schema\.json$'
@@ -547,7 +547,7 @@ check "the evidence intro judges the code at this head" every prompt 'the code a
 check "the refuter prompt drops the strict rule" never prompt 'Inability to confirm is a refutation'
 check "every claim got a verdict" jq -e 'all(.[]; .v.verdict != "ERROR")' "$IMERGED"
 check "UNVERIFIABLE findings survive into the report" grep -q 'UNVERIFIABLE' "$IREPORT"
-check "the report names the opus finder" grep -q 'claude-opus-5-5/max' "$IREPORT"
+check "the report names the opus finder" grep -q 'claude-opus-5-5/medium' "$IREPORT"
 check "the report names the gemini finder" grep -q 'gemini-3.8-flash-high' "$IREPORT"
 check "the report names the refuter" grep -q 'glm-5.3-flash' "$IREPORT"
 check "a regular pin in config.env does not reach intense" absent "$IREPORT" 'regular-pin'
@@ -582,7 +582,7 @@ check "  but not for the cross-cutting pass" awk '
   /    t[0-9][0-9] / && !first { first = NR }
   END { exit !(first && x && first < x) }' "$SANDBOX/run5.log"
 check "the report names the model that actually ran" grep -q 'claude-sonnet-5-5' "$REPORT"
-PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" PR_REVIEW_FINDERS="anthropic:claude-opus-5-5@max" \
+PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" PR_REVIEW_FINDERS="anthropic:claude-opus-5-5@medium" \
   "$HERE/pr-review.sh" "$PIN_PR" --sonnet --no-brief > "$SANDBOX/run6.log" 2>&1 || true
 check "--sonnet beats PR_REVIEW_FINDERS, and says so" \
   grep -q 'overrides PR_REVIEW_FINDERS' "$SANDBOX/run6.log"

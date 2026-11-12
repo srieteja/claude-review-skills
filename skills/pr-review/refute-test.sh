@@ -171,6 +171,7 @@ claims agy.c01-F1 > "$SB/f.json"
 STUB_ENV_LOG="$SB/env" run $ANT
 check "a claude refuter runs on claude"             [ "$(calls)" = claude ]
 check "  verdict records it"                        [ "$(verdict agy.c01-F1 model)" = claude-x ]
+check "  a spec with no @effort runs at --effort medium" [ "$(cat "$SB/calls.models")" = claude-x@medium ]
 check "  on the login: no endpoint, no SIMPLE, no ollama key" [ "$(cat "$SB/env")" = "base= simple= ollama=" ]
 
 STUB_CLAUDE_STATUS=429 STUB_CLAUDE_RESULT="You've hit your session limit · resets 5pm" run $ANT
@@ -178,8 +179,8 @@ check "a session limit: claim is ERROR"             [ "$(verdict agy.c01-F1 verd
 check "  after one call, no retry"                  [ "$(calls)" = claude ]
 check "  reason says quota"                         grep -q quota "$W/verdicts/agy.c01-F1.json"
 
-STUB_CLAUDE_STATUS=null STUB_CLAUDE_RESULT="You've hit your weekly limit" run $ANT
-check "the limit's wording alone is enough"         [ "$(calls)" = claude ]
+STUB_CLAUDE_STATUS=null STUB_CLAUDE_RESULT="You've hit your weekly limit · resets 5pm" run $ANT
+check "the limit's wording with a reset time is enough" [ "$(calls)" = claude ]
 
 claims anthropic.c01-F1 > "$SB/f.json"
 run $ANT --cross

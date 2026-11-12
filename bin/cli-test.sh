@@ -78,8 +78,8 @@ check "run through a symlink, it still links the repo's skills" \
 echo "models"
 check "manual: today's defaults for both presets" sh -c '
   out="$("$@" -- models)"
-  printf "%s" "$out" | grep -q "regular.*anthropic:claude-opus-5-5@xhigh.*agy:gemini-3.8-flash-high" &&
-  printf "%s" "$out" | grep -q "intense.*anthropic:claude-opus-5-5@max agy:gemini-3.8-flash-high.*ollama:glm-5.3-flash"
+  printf "%s" "$out" | grep -q "regular.*anthropic:claude-opus-5-5@medium.*agy:gemini-3.8-flash-high" &&
+  printf "%s" "$out" | grep -q "intense.*anthropic:claude-opus-5-5@medium agy:gemini-3.8-flash-high.*ollama:glm-5.3-flash"
 ' _ "$cli" REVIEW_SKILLS_MODELS=manual
 check "one preset when asked" sh -c '! "$@" -- models intense | grep -q "^regular"' _ "$cli" REVIEW_SKILLS_MODELS=manual
 check "a same-family refuter is called out" sh -c '"$@" -- models regular | grep -q "same family"' _ "$cli"

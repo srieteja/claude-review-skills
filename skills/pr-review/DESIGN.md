@@ -57,7 +57,7 @@ checked"** and bucketed with disputed, never with confirmed. A missing check is 
 ```mermaid
 flowchart LR
   D[pr.diff + tree @ head SHA] --> S{feature slices + _cross}
-  S --> A["anthropic finder<br/>opus-5-5 @max"]
+  S --> A["anthropic finder<br/>opus-5-5 @medium"]
   S --> G["agy finder<br/>gemini-3.8-flash-high"]
   A --> FF[feature findings]
   G --> FF

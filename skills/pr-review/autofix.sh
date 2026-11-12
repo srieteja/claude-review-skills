@@ -31,7 +31,7 @@
 # AUTOFIX_ANALYZE_ONLY (space-separated globs on a package's dir, default `tests/*`) names
 # packages whose tests need a live rig: the gate runs `dart analyze` there, not `dart test`,
 # and the PR body says so. Empty tests every package.
-# AUTOFIX_MODEL (default claude-opus-5-5), AUTOFIX_EFFORT (default high) and AUTOFIX_BUDGET
+# AUTOFIX_MODEL (default claude-opus-5-5), AUTOFIX_EFFORT (default medium, never above) and AUTOFIX_BUDGET
 # (USD, default 8.00, `none` uncaps) pick the implementer's run; AUTOFIX_CLAUDE swaps its binary.
 # AUTOFIX_IMPLEMENTERS (default "claude ollama") is tried in order: one its account rate-limits
 # (429, quota) hands the task to the next; ollama needs OLLAMA_API_KEY and AUTOFIX_OLLAMA_MODEL
@@ -62,7 +62,7 @@ load_config
 LAST_EVENT='include "last-event"; last_event'
 CLAUDE="${AUTOFIX_CLAUDE:-claude}"
 MODEL="${AUTOFIX_MODEL:-claude-opus-5-5}"
-EFFORT="${AUTOFIX_EFFORT:-high}"
+EFFORT="$(clamp_effort "${AUTOFIX_EFFORT:-medium}")"
 # A runaway guard like pr-review.sh's PR_REVIEW_BUDGET_USD, not a budget: a watcher may run this
 # unattended, and nothing else bounds the run. A capped run ends in error, so no PR.
 BUDGET="${AUTOFIX_BUDGET:-8.00}"; [ "$BUDGET" != none ] || BUDGET=""

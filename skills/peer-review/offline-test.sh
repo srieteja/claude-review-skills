@@ -179,7 +179,7 @@ setup; export STUB_CURL_CODE=401; run 7
 check "probe 401: falls back to regular"           said "ENGINE=regular"
 unset STUB_CURL_CODE
 
-setup; export PR_REVIEW_INTENSE_FINDERS=anthropic:claude-opus-5-5@max PR_REVIEW_INTENSE_REFUTER=agy:gemini-x; run 7
+setup; export PR_REVIEW_INTENSE_FINDERS=anthropic:claude-opus-5-5@medium PR_REVIEW_INTENSE_REFUTER=agy:gemini-x; run 7
 unset PR_REVIEW_INTENSE_FINDERS PR_REVIEW_INTENSE_REFUTER
 check "an intense refuter not on ollama: intense, no probe" said "ENGINE=intense"
 check "  never calls curl"                         [ "$(calls curl)" = 0 ]

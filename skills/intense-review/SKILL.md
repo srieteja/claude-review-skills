@@ -1,6 +1,6 @@
 ---
 name: intense-review
-description: Maximum-effort adversarial review of a GitHub PR. Opus 5.5 at max effort and Gemini 3.8 Flash (high) review the PR in parallel, then glm-5.3-flash over ollama tries to refute every finding under an evidence burden. There is no dollar cap. Use when the user says "/intense-review <number>" or asks for the deepest or most thorough review of a PR.
+description: Adversarial review of a GitHub PR. Opus 5.5 at medium effort and Gemini 3.8 Flash (high) review the PR in parallel, then glm-5.3-flash over ollama tries to refute every finding under an evidence burden. There is no dollar cap. Use when the user says "/intense-review <number>" or asks for the deepest or most thorough review of a PR.
 ---
 
 # Intense PR review
@@ -13,7 +13,7 @@ covered here.
 
 | | intense | default `/pr-review` |
 |---|---|---|
-| finders (stage 1) | `claude-opus-5-5` **@max** and `gemini-3.8-flash-high` (via agy), run in parallel | `claude-opus-5-5` @medium |
+| finders (stage 1) | `claude-opus-5-5` **@medium** and `gemini-3.8-flash-high` (via agy), run in parallel | `claude-opus-5-5` @medium |
 | refuter (stage 2) | `glm-5.3-flash` via ollama.com | `gemini-3.8-flash-high` via agy |
 | burden | **evidence**: REFUTED needs quoted counter-evidence; an unresolved claim stays in as UNVERIFIABLE | **strict**: an unconfirmed claim counts as refuted |
 | dollar cap | **none** | $8.00 per slice |
@@ -37,7 +37,7 @@ The two stores are separate, so an intense run never overwrites a default review
 
 ## Before you run it, tell the user
 
-- **Cost is uncapped.** The timeout is the only ceiling. It applies per slice, per finder. A large PR means many slices × 2 finders at the top effort tier.
+- **Cost is uncapped.** The timeout is the only ceiling. It applies per slice, per finder. A large PR means many slices × 2 finders, both running at medium effort.
 - **Egress.** Every claim, plus every source file the refuter opens, is sent to ollama.com.
   - The refuter is limited to `Read`, but `Read` can still open absolute paths outside the review tree.
   - So a PR that injects instructions into it could make it read local files, such as `config.env` or SSH keys.
@@ -61,7 +61,7 @@ The two stores are separate, so an intense run never overwrites a default review
 
 | env | default |
 |---|---|
-| `PR_REVIEW_INTENSE_FINDERS` | the best reachable per transport, at most two, from `lib/models.tsv` — `anthropic:claude-opus-5-5@max agy:gemini-3.8-flash-high` with every backend reachable |
+| `PR_REVIEW_INTENSE_FINDERS` | the best reachable per transport, at most two, from `lib/models.tsv` — `anthropic:claude-opus-5-5@medium agy:gemini-3.8-flash-high` with every backend reachable |
 | `PR_REVIEW_INTENSE_REFUTER` | the best reachable of a family no finder is from — `ollama:glm-5.3-flash` with every backend reachable |
 | `PR_REVIEW_INTENSE_DIR` | `~/.reviews/_intense` |
 | `PR_REVIEW_S1_TIMEOUT` | `60m` |

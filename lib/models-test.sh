@@ -62,7 +62,7 @@ fresh() { rm -rf "$CACHE" "$SB/log"; mkdir -p "$SB/log"; }
 calls() { if [ -f "$SB/log/$1" ]; then wc -l < "$SB/log/$1" | tr -d ' '; else echo 0; fi; }
 ALL=(STUB_CLAUDE=in STUB_AGY=in OLLAMA_API_KEY=k-oll)
 REG_DEFAULT="anthropic:claude-opus-5-5@medium | agy:gemini-3.8-flash-high | 0 | 1"
-INT_DEFAULT="anthropic:claude-opus-5-5@max agy:gemini-3.8-flash-high | ollama:glm-5.3-flash | 0 | 1"
+INT_DEFAULT="anthropic:claude-opus-5-5@medium agy:gemini-3.8-flash-high | ollama:glm-5.3-flash | 0 | 1"
 
 echo "manual"
 fresh
@@ -93,13 +93,13 @@ check "ollama only: glm finds, glm-flash refutes, flagged" \
   is "ollama:glm-5.3 | ollama:glm-5.3-flash | 1 | 0" regular OLLAMA_API_KEY=k-oll
 fresh
 check "claude + ollama, intense: one finder, glm refutes" \
-  is "anthropic:claude-opus-5-5@max | ollama:glm-5.3-flash | 0 | 1" intense STUB_CLAUDE=in OLLAMA_API_KEY=k-oll
+  is "anthropic:claude-opus-5-5@medium | ollama:glm-5.3-flash | 0 | 1" intense STUB_CLAUDE=in OLLAMA_API_KEY=k-oll
 fresh
 check "claude + agy, intense: gemini refutes rather than finds -- no third family to refute two" \
-  is "anthropic:claude-opus-5-5@max | agy:gemini-3.8-flash-high | 0 | 1" intense STUB_CLAUDE=in STUB_AGY=in
+  is "anthropic:claude-opus-5-5@medium | agy:gemini-3.8-flash-high | 0 | 1" intense STUB_CLAUDE=in STUB_AGY=in
 fresh
 check "a model ollama does not list is skipped" \
-  is "anthropic:claude-opus-5-5@max | agy:gemini-3.8-flash-high | 0 | 1" \
+  is "anthropic:claude-opus-5-5@medium | agy:gemini-3.8-flash-high | 0 | 1" \
   intense "${ALL[@]}" STUB_OLLAMA_IDS="glm-5.3 kimi-k3"
 fresh
 check "a key ollama refuses counts as no ollama" \
@@ -180,7 +180,7 @@ check "a pinned refuter of a finder's family is flagged" \
 
 echo "families"
 fam() { test "$(env -i PATH="$PATH" HOME=/h bash -c '. "$1"; model_family "$2"' _ "$HERE/common.sh" "$1")" = "$2"; }
-check "claude-* is anthropic" fam anthropic:claude-opus-5-5@max anthropic
+check "claude-* is anthropic" fam anthropic:claude-opus-5-5@medium anthropic
 check "gemini-* is google" fam agy:gemini-3.8-flash-high google
 check "gemma over ollama is google too" fam ollama:gemma4:27b google
 check "anything else is its name's first word" fam ollama:glm-5.3-flash glm

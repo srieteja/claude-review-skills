@@ -22,7 +22,7 @@ anthropic_key_check || exit 1
 # Stage 1's finders and stage 2's refuter are resolved after the arg loop (lib/models.sh), for
 # this preset: regular, or intense when intense-review.sh runs this script.
 PRESET="${PR_REVIEW_PRESET:-regular}"
-S1_EFFORT="${PR_REVIEW_S1_EFFORT:-medium}"
+S1_EFFORT="$(clamp_effort "${PR_REVIEW_S1_EFFORT:-medium}")"
 # The cheaper finder --sonnet opts into.
 SONNET_MODEL="${PR_REVIEW_SONNET_MODEL:-claude-sonnet-5-5}"
 S1_TIMEOUT="${PR_REVIEW_S1_TIMEOUT:-25m}"
@@ -42,7 +42,7 @@ CACHE_ROOT="${TMPDIR:-/tmp}/pr-review-cache"
 BRIEF_MODEL="${PR_REVIEW_BRIEF_MODEL:-claude-sonnet-5-5}"
 # Summarising a diff, not reasoning over a codebase. xhigh here buys thinking tokens billed
 # at output rates for no gain; the finder's effort is a separate knob for a separate job.
-BRIEF_EFFORT="${PR_REVIEW_BRIEF_EFFORT:-medium}"
+BRIEF_EFFORT="$(clamp_effort "${PR_REVIEW_BRIEF_EFFORT:-medium}")"
 # A runaway guard, not a budget. The real cost control is CHUNK_BYTES, which bounds the
 # input deterministically; at the 80000 default this call prices out around $0.10. A tight
 # cap could only make things worse: --max-budget-usd is checked between turns, and a
@@ -514,7 +514,7 @@ review_slice() {
       # --setting-sources "": no user settings, hooks or CLAUDE.md in the finder session.
       ( cd "$TREE" && anthropic_env ${ANTHROPIC_TIMEOUT_BIN:+"$ANTHROPIC_TIMEOUT_BIN" "$S1_TIMEOUT"} \
           claude -p "$(cat "$WORK/chunks/$key.prompt")" \
-          --model "$F_MODEL" ${F_EFFORT:+--effort "$F_EFFORT"} --output-format json --add-dir "$WORK" \
+          --model "$F_MODEL" --effort "$(clamp_effort "${F_EFFORT:-medium}")" --output-format json --add-dir "$WORK" \
           --strict-mcp-config --setting-sources "" ${BUDGET_CAP:+--max-budget-usd "$BUDGET_CAP"} \
           --allowedTools Read Grep Glob Write "Bash(git diff:*)" "Bash(git log:*)" \
           --disallowedTools Edit NotebookEdit Task WebSearch WebFetch \

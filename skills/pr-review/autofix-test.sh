@@ -263,7 +263,7 @@ check "implements in a tree of its own"        ran_in_own_tree
 check "  at the reviewed SHA"                  [ "$(cat "$C/log/claude.head")" = "$SHA" ]
 check "  and removes it"                       impl_gone
 check "defaults to claude-opus-5-5"            [ "$(arg --model)" = claude-opus-5-5 ]
-check "  at high effort"                       [ "$(arg --effort)" = high ]
+check "  at medium effort"                     [ "$(arg --effort)" = medium ]
 check "  under the \$8 runaway guard"           [ "$(arg --max-budget-usd)" = 8.00 ]
 check "accepts edits, unattended"              [ "$(arg --permission-mode)" = acceptEdits ]
 check "  keeps your settings and MCP out"      has_arg --strict-mcp-config

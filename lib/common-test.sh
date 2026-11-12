@@ -20,7 +20,7 @@ cat > "$CFG" <<'E'
 PR_REVIEW_FIX_AUTHORS=alice,bob
 
 export PR_REVIEW_JOBS=7
-PR_REVIEW_FINDERS="anthropic:claude-opus-5-5@max agy:gemini-3.8-flash-high"
+PR_REVIEW_FINDERS="anthropic:claude-opus-5-5@medium agy:gemini-3.8-flash-high"
 PEER_REVIEW_INTENSE='0'
 PR_REVIEW_DIR=~/rv
 PR_REVIEW_INTENSE_DIR="~/rv i"
@@ -33,7 +33,7 @@ chmod 600 "$CFG"
 check "a key from the file is set" is 'load_config; echo "$PR_REVIEW_JOBS"' 7
 check "export prefix is accepted" is 'load_config; bash -c "echo \$PR_REVIEW_JOBS"' 7
 check "double quotes are stripped" is 'load_config; echo "$PR_REVIEW_FINDERS"' \
-  "anthropic:claude-opus-5-5@max agy:gemini-3.8-flash-high"
+  "anthropic:claude-opus-5-5@medium agy:gemini-3.8-flash-high"
 check "a leading ~/ is the home directory" is 'load_config; echo "$PR_REVIEW_DIR|$PR_REVIEW_INTENSE_DIR"' "$SB/home/rv|$SB/home/rv i"
 check "single quotes are stripped" is 'load_config; echo "$PEER_REVIEW_INTENSE"' 0
 check "a key outside the toolkit's prefixes is ignored" is 'load_config; echo "$PATH" | grep -c nowhere || true' 0
@@ -139,6 +139,16 @@ check "an enterprise host URL" ref https://git.example.com/acme/widgets/pull/12 
 check "junk is refused" is 'parse_pr_ref 7x && echo yes || echo no' no
 check "an issue URL is refused" is 'parse_pr_ref https://github.com/acme/widgets/issues/7 && echo yes || echo no' no
 check "owner/repo with no number is refused" is 'parse_pr_ref acme/widgets# && echo yes || echo no' no
+
+echo "effort cap"
+eff() { is "clamp_effort '$1' 2>/dev/null" "$2"; }
+check "low stays low" eff low low
+check "medium stays medium" eff medium medium
+check "high becomes medium" eff high medium
+check "xhigh becomes medium" eff xhigh medium
+check "max becomes medium" eff max medium
+check "junk becomes medium" eff turbo medium
+check "empty stays empty" eff "" ""
 
 [ "$fail" -eq 0 ] && printf '\n\033[32mall lib checks passed\033[0m\n' || printf '\n\033[31mlib checks FAILED\033[0m\n'
 exit $fail

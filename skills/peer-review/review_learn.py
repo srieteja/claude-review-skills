@@ -601,6 +601,8 @@ def claude(prompt, model, effort, timeout):
 def default_llm(kind):
     model = os.environ.get("PR_REVIEW_LEARN_MODEL", "claude-sonnet-5-5")
     effort = os.environ.get("PR_REVIEW_LEARN_EFFORT", "medium")
+    if effort not in ("low", "medium"):
+        effort = "medium"  # Claude effort is never above medium
     timeout = 180 if kind == "write" else 600
     return lambda prompt: claude(prompt, model, effort, timeout)
 

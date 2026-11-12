@@ -126,3 +126,12 @@ check_pr_repo() {
   [ "$(printf '%s' "$PR_REPO" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$here" | tr '[:upper:]' '[:lower:]')" ] \
     || die "#$PR is in $PR_REPO, but this checkout is ${here:-not a GitHub repo gh knows} -- run from a clone of $PR_REPO"
 }
+
+# clamp_effort <effort>: Claude effort is capped at medium for every call in this repo. low and medium pass
+# through; high, xhigh, max and anything unrecognised become medium, with a note on stderr.
+clamp_effort() {
+  case "${1:-}" in
+    ""|low|medium) printf '%s' "${1:-}" ;;
+    *) printf 'clamp_effort: effort "%s" is above medium; using medium\n' "$1" >&2; printf medium ;;
+  esac
+}

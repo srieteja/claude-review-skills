@@ -9,7 +9,7 @@ regular	finder	ollama:glm-5.3
 regular	refuter	agy:gemini-3.8-flash-high
 regular	refuter	ollama:glm-5.3-flash
 regular	refuter	anthropic:claude-opus-5-5
-intense	finder	anthropic:claude-opus-5-5@max
+intense	finder	anthropic:claude-opus-5-5@medium
 intense	finder	agy:gemini-3.8-flash-high
 intense	finder	ollama:deepseek-v4.1-flash
 intense	finder	ollama:glm-5.3
