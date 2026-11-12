@@ -106,7 +106,7 @@ resolve_models() {
     regular)
       fpin="${PR_REVIEW_FINDERS:-}"
       if [ -z "$fpin" ] && [ -n "${PR_REVIEW_TRANSPORT:-}${PR_REVIEW_S1_MODEL:-}${PR_REVIEW_OPUS_MODEL:-}${PR_REVIEW_S1_EFFORT:-}" ]; then
-        fpin="${PR_REVIEW_TRANSPORT:-anthropic}:${PR_REVIEW_S1_MODEL:-${PR_REVIEW_OPUS_MODEL:-claude-opus-5-5}}@${PR_REVIEW_S1_EFFORT:-xhigh}"
+        fpin="${PR_REVIEW_TRANSPORT:-anthropic}:${PR_REVIEW_S1_MODEL:-${PR_REVIEW_OPUS_MODEL:-claude-opus-5-5}}@${PR_REVIEW_S1_EFFORT:-medium}"
       fi
       rpin="${PR_REVIEW_REFUTER:-${PR_REVIEW_GEMINI_MODEL:+agy:$PR_REVIEW_GEMINI_MODEL}}"; max=1 ;;
     intense)

@@ -22,7 +22,7 @@ anthropic_key_check || exit 1
 # Stage 1's finders and stage 2's refuter are resolved after the arg loop (lib/models.sh), for
 # this preset: regular, or intense when intense-review.sh runs this script.
 PRESET="${PR_REVIEW_PRESET:-regular}"
-S1_EFFORT="${PR_REVIEW_S1_EFFORT:-xhigh}"
+S1_EFFORT="${PR_REVIEW_S1_EFFORT:-medium}"
 # The cheaper finder --sonnet opts into.
 SONNET_MODEL="${PR_REVIEW_SONNET_MODEL:-claude-sonnet-5-5}"
 S1_TIMEOUT="${PR_REVIEW_S1_TIMEOUT:-25m}"

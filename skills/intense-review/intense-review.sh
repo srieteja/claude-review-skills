@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# intense-review -- pr-review.sh's intense preset: up to two finders of different families at
-# their highest effort, run in parallel, every finding refuted under the evidence burden by a
-# model of a third family. By default, with every backend reachable: opus and gemini find,
-# glm-5.3-flash over ollama refutes; if glm is unavailable mid-run, the other finder's model
-# refutes (opus <-> gemini). lib/models.tsv ranks the models; PR_REVIEW_INTENSE_FINDERS and
+# intense-review -- pr-review.sh's intense preset: up to two finders of different families
+# (medium effort, the cap), run in parallel, every finding refuted under the evidence burden by
+# a model of another family. lib/models.tsv ranks the rows and the reachable ones are taken in
+# order: with every backend reachable, opus and gemini find and glm-5.3-flash over ollama
+# refutes; with no ollama key, claude sonnet refutes. If the refuter is unavailable mid-run, the
+# other finder's model refutes (opus <-> gemini). PR_REVIEW_INTENSE_FINDERS and
 # PR_REVIEW_INTENSE_REFUTER pin them.
 #
 #   intense-review.sh <pr> [any pr-review.sh option]

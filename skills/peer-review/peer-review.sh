@@ -56,6 +56,7 @@
 #      OLLAMA_API_KEY (no key, no probe: the regular review runs)
 #      PR_REVIEW_INTENSE_REFUTER (the model probed)
 #      PR_REVIEW_DIR (default ~/.reviews), PR_REVIEW_INTENSE_DIR (default <PR_REVIEW_DIR>/_intense)
+#      PEER_REVIEW_ENGINE=regular (never run the intense engine; default auto)
 #      PEER_REVIEW_INTENSE, PEER_REVIEW_REGULAR, PEER_REVIEW_AUTOFIX (the scripts wrapped, for tests)
 #      PR_REVIEW_LEARN=off (no capture, no restyled body), PR_REVIEW_LEARN_DIR, PEER_REVIEW_SHIPPER
 #        (watch when unattended) -- see review_learn.py
@@ -412,7 +413,7 @@ learn record rerun --head "$LIVE" $(printf '%s\n' "$STORES" | while IFS= read -r
 while IFS= read -r s; do d="$(review_dir "$s" "$AUTHOR" "$REPO" "$PR")"; rm -rf "$d/decision" "$d/autofix"; done <<EOF
 $STORES
 EOF
-if intense_ready; then
+if [ "${PEER_REVIEW_ENGINE:-auto}" != regular ] && intense_ready; then
   ENGINE=intense; STORE="$INTENSE_STORE"
 else
   ENGINE=regular; STORE="$REGULAR_STORE"; say "falling back to the regular review"

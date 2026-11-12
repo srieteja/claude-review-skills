@@ -65,7 +65,7 @@ echo "$*" >> "$STUB_LOG/dart"
 STUB
 chmod +x "$SB/bin/"*
 # PEER_REVIEW_AUTOFIX is deliberately left unset: the wrapper's own default path is under test.
-export PATH="$SB/bin:$PATH" PEER_REVIEW_INTENSE="$SB/bin/intense-review.sh" \
+export PATH="$SB/bin:$PATH" PEER_REVIEW_INTENSE="$SB/bin/intense-review.sh" PEER_REVIEW_ENGINE=intense \
        OLLAMA_API_KEY=k PR_REVIEW_FIX_AUTHORS=alice REVIEW_SKILLS_CONFIG="$SB/no-config" REVIEW_SKILLS_LOCK_DIR="$SB/locks"
 export REVIEW_SKILLS_MODELS=manual
 # The learning engine's hooks are offline-test.sh's; here they'd only call the claude stub.

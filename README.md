@@ -37,7 +37,7 @@ git clone https://github.com/srieteja/claude-review-skills ~/src/review-skills
 
 ## Backends: claude alone is enough
 
-With only `claude` signed in, Opus finds and Sonnet refutes. That works, and the report flags the refuter as being from the finder's own family. Add agy or ollama to get a refuter from a different family, which refutes more independently. Neither is required.
+With only `claude` signed in, Opus finds and Opus refutes a regular review (Sonnet refutes an intense one). That works, and the report flags the refuter as being from the finder's own family. Add agy or ollama to get a refuter from a different family, which refutes more independently. Neither is required.
 
 | Backend | How to enable | Model family | Needed? |
 |---|---|---|---|
@@ -67,7 +67,7 @@ To choose models yourself:
 
 ```text
 $ review-skills models          # claude only
-  regular  anthropic:claude-opus-5-5@xhigh -> refuted by anthropic:claude-sonnet-5-5  (same family as a finder: weaker refutation)
+  regular  anthropic:claude-opus-5-5@xhigh -> refuted by anthropic:claude-opus-5-5  (same family as a finder: weaker refutation)
   intense  anthropic:claude-opus-5-5@max -> refuted by anthropic:claude-sonnet-5-5  (same family as a finder: weaker refutation)
 
 $ review-skills models          # claude, agy and ollama

@@ -61,7 +61,7 @@ NOAGY="$SB/noagy:/usr/bin:/bin"
 fresh() { rm -rf "$CACHE" "$SB/log"; mkdir -p "$SB/log"; }
 calls() { if [ -f "$SB/log/$1" ]; then wc -l < "$SB/log/$1" | tr -d ' '; else echo 0; fi; }
 ALL=(STUB_CLAUDE=in STUB_AGY=in OLLAMA_API_KEY=k-oll)
-REG_DEFAULT="anthropic:claude-opus-5-5@xhigh | agy:gemini-3.8-flash-high | 0 | 1"
+REG_DEFAULT="anthropic:claude-opus-5-5@medium | agy:gemini-3.8-flash-high | 0 | 1"
 INT_DEFAULT="anthropic:claude-opus-5-5@max agy:gemini-3.8-flash-high | ollama:glm-5.3-flash | 0 | 1"
 
 echo "manual"
@@ -83,8 +83,8 @@ check "auto is the default" is "$REG_DEFAULT" regular "${ALL[@]}" REVIEW_SKILLS_
 
 echo "auto, some backends"
 fresh
-check "claude only: a sonnet refuter, flagged same-family" \
-  is "anthropic:claude-opus-5-5@xhigh | anthropic:claude-sonnet-5-5 | 1 | 1" regular STUB_CLAUDE=in
+check "claude only: an opus refuter, flagged same-family" \
+  is "anthropic:claude-opus-5-5@medium | anthropic:claude-opus-5-5 | 1 | 1" regular STUB_CLAUDE=in
 fresh
 check "agy only: gemini finds, gemini refutes, flagged" \
   is "agy:gemini-3.8-flash-high | agy:gemini-3.8-flash-high | 1 | 0" regular STUB_AGY=in
@@ -103,14 +103,14 @@ check "a model ollama does not list is skipped" \
   intense "${ALL[@]}" STUB_OLLAMA_IDS="glm-5.3 kimi-k3"
 fresh
 check "a key ollama refuses counts as no ollama" \
-  is "anthropic:claude-opus-5-5@xhigh | agy:gemini-3.8-flash-high | 0 | 1" regular STUB_CLAUDE=in STUB_AGY=in OLLAMA_API_KEY=bad STUB_OLLAMA_CODE=401
+  is "anthropic:claude-opus-5-5@medium | agy:gemini-3.8-flash-high | 0 | 1" regular STUB_CLAUDE=in STUB_AGY=in OLLAMA_API_KEY=bad STUB_OLLAMA_CODE=401
 check "  and is not cached" test ! -e "$CACHE/ollama.models"
 fresh
 check "ollama silent once, then answering: glm still refutes" \
-  is "anthropic:claude-opus-5-5@xhigh | ollama:glm-5.3-flash | 0 | 1" regular STUB_CLAUDE=in OLLAMA_API_KEY=k-oll STUB_OLLAMA_CODE="000 200"
+  is "anthropic:claude-opus-5-5@medium | ollama:glm-5.3-flash | 0 | 1" regular STUB_CLAUDE=in OLLAMA_API_KEY=k-oll STUB_OLLAMA_CODE="000 200"
 fresh
-check "ollama silent twice: the run goes on with a sonnet refuter" \
-  is "anthropic:claude-opus-5-5@xhigh | anthropic:claude-sonnet-5-5 | 1 | 1" regular STUB_CLAUDE=in OLLAMA_API_KEY=k-oll STUB_OLLAMA_CODE=000
+check "ollama silent twice: the run goes on with an opus refuter" \
+  is "anthropic:claude-opus-5-5@medium | anthropic:claude-opus-5-5 | 1 | 1" regular STUB_CLAUDE=in OLLAMA_API_KEY=k-oll STUB_OLLAMA_CODE=000
 fresh
 w="$(WHY_PATH="$NOAGY" why regular STUB_CLAUDE=in OLLAMA_API_KEY=k-oll STUB_OLLAMA_CODE=000)"
 check "  and the warning says ollama did not answer" sh -c 'printf "%s" "$1" | grep -q "ollama did not answer"' _ "$w"
@@ -128,7 +128,7 @@ fresh
 check "a cross-family refuter needs no explaining" test -z "$(why regular "${ALL[@]}")"
 fresh
 check "ANTHROPIC_USE_API_KEY=1 with a key: claude is ready without a login check" \
-  is "anthropic:claude-opus-5-5@xhigh | anthropic:claude-sonnet-5-5 | 1 | 1" regular ANTHROPIC_USE_API_KEY=1 ANTHROPIC_API_KEY=k
+  is "anthropic:claude-opus-5-5@medium | anthropic:claude-opus-5-5 | 1 | 1" regular ANTHROPIC_USE_API_KEY=1 ANTHROPIC_API_KEY=k
 check "  claude auth status is never asked" test "$(calls claude)" = 0
 
 echo "no backend"
@@ -147,7 +147,7 @@ check "  so a second run asks agy nothing" \
 check "  (agy asked once)" test "$(calls agy)" = 1
 touch -t 200001010000 "$CACHE/agy.models"
 check "a day-old list is asked again" \
-  is "anthropic:claude-opus-5-5@xhigh | ollama:glm-5.3-flash | 0 | 1" regular STUB_CLAUDE=in STUB_AGY=out OLLAMA_API_KEY=k-oll
+  is "anthropic:claude-opus-5-5@medium | ollama:glm-5.3-flash | 0 | 1" regular STUB_CLAUDE=in STUB_AGY=out OLLAMA_API_KEY=k-oll
 check "  and, unreachable now, dropped" test ! -e "$CACHE/agy.models"
 fresh
 res regular STUB_CLAUDE=in >/dev/null 2>&1 || true
@@ -161,7 +161,7 @@ fresh
 check "PR_REVIEW_FINDERS pins regular's finders" \
   is "ollama:kimi-k3 | agy:gemini-3.8-flash-high | 0 | 1" regular "${ALL[@]}" PR_REVIEW_FINDERS=ollama:kimi-k3
 check "PR_REVIEW_REFUTER pins regular's refuter" \
-  is "anthropic:claude-opus-5-5@xhigh | ollama:kimi-k3 | 0 | 1" regular "${ALL[@]}" PR_REVIEW_REFUTER=ollama:kimi-k3
+  is "anthropic:claude-opus-5-5@medium | ollama:kimi-k3 | 0 | 1" regular "${ALL[@]}" PR_REVIEW_REFUTER=ollama:kimi-k3
 check "intense ignores the regular pins" \
   is "$INT_DEFAULT" intense "${ALL[@]}" PR_REVIEW_FINDERS=ollama:kimi-k3 PR_REVIEW_REFUTER=ollama:kimi-k3
 check "PR_REVIEW_INTENSE_FINDERS / _REFUTER pin intense" \
@@ -169,14 +169,14 @@ check "PR_REVIEW_INTENSE_FINDERS / _REFUTER pin intense" \
 check "the old single-finder knobs still pin" \
   is "ollama:m@high | agy:gemini-3.8-flash-high | 0 | 1" regular "${ALL[@]}" PR_REVIEW_TRANSPORT=ollama PR_REVIEW_S1_MODEL=m PR_REVIEW_S1_EFFORT=high
 check "PR_REVIEW_OPUS_MODEL is the old name for S1_MODEL" \
-  is "anthropic:claude-o@xhigh | agy:gemini-3.8-flash-high | 0 | 1" regular "${ALL[@]}" PR_REVIEW_OPUS_MODEL=claude-o
+  is "anthropic:claude-o@medium | agy:gemini-3.8-flash-high | 0 | 1" regular "${ALL[@]}" PR_REVIEW_OPUS_MODEL=claude-o
 check "PR_REVIEW_GEMINI_MODEL pins an agy refuter" \
-  is "anthropic:claude-opus-5-5@xhigh | agy:gemini-g | 0 | 1" regular "${ALL[@]}" PR_REVIEW_GEMINI_MODEL=gemini-g
+  is "anthropic:claude-opus-5-5@medium | agy:gemini-g | 0 | 1" regular "${ALL[@]}" PR_REVIEW_GEMINI_MODEL=gemini-g
 fresh
 check "a pinned pair needs no probe" \
   is "ollama:a | agy:b | 0 | 1" regular PR_REVIEW_FINDERS=ollama:a PR_REVIEW_REFUTER=agy:b REVIEW_SKILLS_MODELS=manual
 check "a pinned refuter of a finder's family is flagged" \
-  is "anthropic:claude-opus-5-5@xhigh | anthropic:claude-z | 1 | 1" regular "${ALL[@]}" PR_REVIEW_REFUTER=anthropic:claude-z
+  is "anthropic:claude-opus-5-5@medium | anthropic:claude-z | 1 | 1" regular "${ALL[@]}" PR_REVIEW_REFUTER=anthropic:claude-z
 
 echo "families"
 fam() { test "$(env -i PATH="$PATH" HOME=/h bash -c '. "$1"; model_family "$2"' _ "$HERE/common.sh" "$1")" = "$2"; }
