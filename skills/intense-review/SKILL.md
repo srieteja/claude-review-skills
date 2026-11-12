@@ -13,7 +13,7 @@ covered here.
 
 | | intense | default `/pr-review` |
 |---|---|---|
-| finders (stage 1) | `claude-opus-5-5` **@max** and `gemini-3.8-flash-high` (via agy), run in parallel | `claude-opus-5-5` @xhigh |
+| finders (stage 1) | `claude-opus-5-5` **@max** and `gemini-3.8-flash-high` (via agy), run in parallel | `claude-opus-5-5` @medium |
 | refuter (stage 2) | `glm-5.3-flash` via ollama.com | `gemini-3.8-flash-high` via agy |
 | burden | **evidence**: REFUTED needs quoted counter-evidence; an unresolved claim stays in as UNVERIFIABLE | **strict**: an unconfirmed claim counts as refuted |
 | dollar cap | **none** | $8.00 per slice |

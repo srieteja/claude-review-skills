@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["findings", "read"],
+  "required": ["findings", "read", "checked"],
   "properties": {
     "findings": {
       "type": "array",
@@ -25,6 +25,11 @@
       "type": "array",
       "items": {"type": "string"},
       "description": "Every source file opened, paths relative to the tree."
+    },
+    "checked": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "One string per changed file in the diff: its path, a colon, then what was done to it (a caller opened, an invariant or error path tested). Every changed file gets an entry, including those with no finding."
     }
   }
 }

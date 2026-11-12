@@ -125,7 +125,11 @@ if [ -n "${STUB_QUOTA:-}" ]; then
   sleep 4711; exit 1
 fi
 [ -z "${STUB_CLAUDE_FAIL:-}" ] || { echo '{"type":"result","subtype":"error_max_turns","num_turns":9}'; exit 1; }
-[ -z "${STUB_EMPTY:-}" ] || { printf '{"findings":[],"read":["x"]}\n' > "$out"; echo '{"type":"result","result":"0"}'; exit 0; }
+if [ -n "${STUB_EMPTY:-}" ]; then
+  chk="$(sed -n 's|^diff --git a/.* b/||p' "$diff" | jq -R '. + ": traced callers"' | jq -sc .)"
+  [ -z "${STUB_NOCHECK:-}" ] || chk='[]'
+  printf '{"findings":[],"read":["x"],"checked":%s}\n' "$chk" > "$out"; echo '{"type":"result","result":"0"}'; exit 0
+fi
 case "$key" in *c02)
   echo 'stub: simulated limit at /Users/someone/private/path' >&2
   echo '{"type":"result","subtype":"error_during_execution","num_turns":3,"total_cost_usd":0.42}'; exit 1 ;; esac
@@ -167,7 +171,10 @@ case "$schema" in
     stub_log agy-find "$@"
     diff="$(printf '%s\n' "$p" | sed -n 's|.*The diff under review is at \([^ ]*\) and.*|\1|p' | head -1)"
     first="$(sed -n 's|^+++ b/||p' "$diff" | head -1)"
-    [ -z "${STUB_EMPTY:-}" ] || { printf '{"structured_output":{"findings":[],"read":["%s"]}}\n' "$first"; exit 0; }
+    if [ -n "${STUB_EMPTY:-}" ]; then
+      chk="$(sed -n 's|^diff --git a/.* b/||p' "$diff" | jq -R '. + ": traced callers"' | jq -sc .)"
+      printf '{"structured_output":{"findings":[],"read":["%s"],"checked":%s}}\n' "$first" "$chk"; exit 0
+    fi
     printf '{"structured_output":{"findings":[{"id":"F1","file":"%s","line":44,"severity":"low","claim":"stub agy","mechanism":"stub","repro":"stub"}],"read":["%s"]}}\n' \
       "$first" "$first"
     ;;
@@ -207,6 +214,20 @@ check "an event after the result does not hide it" \
   test "$(last_event '[{"type":"result","r":3},{"type":"system","r":0}]')" = 3
 check "a transcript with no result event falls back to its last" \
   test "$(last_event '[{"type":"system","r":4}]')" = 4
+
+# slice_unchecked: a changed file is covered only by a "checked" entry that is its path, or its
+# path then a colon and anything -- not by a longer path or a mention that merely contains it.
+echo "coverage matching"
+unchecked() { # <checked-json-array>: the files of a one-file diff the entry leaves uncovered
+  printf 'diff --git a/lib/a.dart b/lib/a.dart\n' > "$SANDBOX/cov.diff"
+  printf '{"findings":[],"read":["x"],"checked":%s}\n' "$1" > "$SANDBOX/cov.json"
+  bash -c "$(sed -n '/^slice_unchecked()/,/^}/p' "$HERE/pr-review.sh"); slice_unchecked \"\$1\" \"\$2\"" _ "$SANDBOX/cov.json" "$SANDBOX/cov.diff"
+}
+check "an entry of path: text covers the file" test -z "$(unchecked '["lib/a.dart: traced callers"]')"
+check "  and the bare path does too" test -z "$(unchecked '["lib/a.dart"]')"
+check "lib/a.dart.bak does not cover lib/a.dart" test "$(unchecked '["lib/a.dart.bak: looked"]')" = lib/a.dart
+check "  nor does a longer path ending in it" test "$(unchecked '["xlib/a.dart: looked"]')" = lib/a.dart
+check "  nor a mention inside the text" test "$(unchecked '["notes: also see lib/a.dart"]')" = lib/a.dart
 
 # fix_lanes: which autofix lanes a review's CONFIRMED findings need, in run order.
 lanes_of() { printf '%s' "$2" | jq -r -L "$HERE" --arg s "$1" 'include "lanes"; fix_lanes($s) | join(" ")'; }
@@ -340,6 +361,11 @@ check "the anthropic finder ran: a plain No findings headline" grep -q '^\*\*No 
 TWO=(PR_REVIEW_FINDERS="anthropic:claude-opus-5-5 agy:gemini-x" PR_REVIEW_REFUTER=agy:gemini-y)
 zero_run both-ran "${TWO[@]}"
 check "both finders ran: the headline names both" grep -q '^\*\*No findings\.\*\* claude-opus-5-5 + gemini-x via agy reviewed' "$ZREPORT"
+zero_run nocheck STUB_NOCHECK=1
+check "an empty result without \"checked\" fails its slice, naming a file" grep -q 'does not name' "$d.log"
+check "  and when every slice does, the run dies instead of reporting a clean pass" grep -q 'every slice failed' "$d.log"
+check "  a slice naming several files is rejected too (c04 and _cross)" \
+  bash -c '! grep -q "c04     0 finding" "$1" && ! grep -q "_cross  0 finding" "$1"' _ "$d.log"
 zero_run anthropic-failed "${TWO[@]}" STUB_CLAUDE_FAIL=1
 check "every anthropic slice failed: no plain No findings headline" absent "$ZREPORT" '^\*\*No findings\.\*\*'
 check "  the headline names only the finder that ran" grep -qx '\*\*No findings reported\*\* by gemini-x via agy\.' "$ZREPORT"

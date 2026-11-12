@@ -72,7 +72,7 @@ Two knobs behave differently there, both deliberately:
 Stage-1 slices are cached per **model, effort and transport**, so a flash run never gets served
 back under an Opus run's name.
 
-Stage 1 defaults to `claude-opus-5-5` at `--effort xhigh` (`PR_REVIEW_S1_MODEL`,
+Stage 1 defaults to `claude-opus-5-5` at `--effort medium` (`PR_REVIEW_S1_MODEL`,
 `PR_REVIEW_S1_EFFORT`). Effort is sent on the anthropic transport only.
 
 `--sonnet` swaps the finder to `claude-sonnet-5-5` (`PR_REVIEW_SONNET_MODEL`) at the same

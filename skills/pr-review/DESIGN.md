@@ -21,7 +21,7 @@ inverted, given one claim at a time and told to default to REFUTED when it canno
 |---|---|---|
 | 0 | `gh` + `git clone --shared` at PR head SHA | `pr.diff`, `tree/` |
 | 0.5 | `claude -p --model claude-sonnet-5-5 --effort medium`, no tools | `reviews/pr<N>-explainer.md` |
-| 1 | each finder in `PR_REVIEW_FINDERS` (default `claude -p --model claude-opus-5-5 --effort xhigh`) × each slice | `findings.json` |
+| 1 | each finder in `PR_REVIEW_FINDERS` (default `claude -p --model claude-opus-5-5 --effort medium`) × each slice | `findings.json` |
 | 2 | `refute` with `PR_REVIEW_REFUTER` (default `agy --model gemini-3.8-flash-high`), one call per claim | `verdicts/<id>.json` |
 | 3 | `jq` join on claim id → `agree.jq` (multi-finder) → `report.jq` | `reviews/pr<N>-review.md` |
 | 4 | `gh pr comment` | posted, only after confirmation |
@@ -70,6 +70,7 @@ flowchart LR
 
 | Decision | Why |
 |---|---|
+| **Finder framing in `review.prompt`**: role, stakes, a parallel competition, "do not self-censor" | Earlier wording told finders to drop what they could not defend, which traded recall for precision before anyone checked. Stage 2's refuter, under an evidence burden, removes false positives, so finders favour recall and the refuter owns precision. The drop-what-you-cannot-defend rule was removed; a finding still has to cite file and line in the tree. |
 | **One finder per transport**, tagged by transport (`anthropic.`, `agy.`) | The tag has to be stable, short and filesystem-safe: it prefixes slice keys, claim ids and cache dirs. The transport is all three. Two finders on one transport would need a model-derived tag, and nobody has asked for that yet, so it is refused up front instead of colliding in the cache. |
 | **Per-finder cache dir**, keyed on SHA + that finder's prompt checksum + model/effort/transport | An agy slice must never be served as an anthropic one. The checksum covers the emit files and `findings.schema.json`, so a schema edit invalidates only the finder that uses it. |
 | **Agreement is annotated, not deduplicated** (`.also`) | Deduplicating means picking one mechanism and discarding the other. Keeping both gets each one refuted independently. Two findings on the same spot, both surviving, is the strongest signal the report can carry. |

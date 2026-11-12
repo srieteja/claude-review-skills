@@ -442,9 +442,28 @@ repo_state() { git -C "$ROOT" status --porcelain | LC_ALL=C sort; }
 # A slice passes when it reported findings, or when it can name the source files it read.
 # The second arm is the no-op guard: a well-formed "findings":[] from a finder that opened
 # nothing used to pass the shape check below and cache as a clean pass.
+# slice_ok <slice.json> [<slice.diff>]: whether a slice counts as reviewed. It needs findings,
+# or a read list. With the diff given, an EMPTY result must also carry a "checked" entry naming
+# every changed file in that diff: "I looked and found nothing" is accepted only with the record
+# of what was looked at. A slice cached before "checked" existed fails this and runs again.
 slice_ok() {
   jq -e '(.findings|type=="array") and ((.findings|length)>0 or (.read|type=="array" and length>0))' \
-    "$1" >/dev/null 2>&1
+    "$1" >/dev/null 2>&1 || return 1
+  [ -n "${2:-}" ] || return 0
+  [ "$(jq '.findings|length' "$1")" -eq 0 ] || return 0
+  # Captured, not piped into grep -q: with pipefail, grep exiting at the first line SIGPIPEs the
+  # producer and the pipeline reads as "nothing unchecked" for any slice naming several files.
+  [ -z "$(slice_unchecked "$1" "$2")" ]
+}
+# slice_unchecked <slice.json> <slice.diff>: the changed files "checked" does not name, one per line.
+# An entry names a file when it is the path, or the path then ":" and a note (never a longer path).
+slice_unchecked() {
+  local f
+  sed -n 's|^diff --git a/.* b/||p' "$2" | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    jq -e --arg f "$f" '(.checked // []) | any(.[]; type == "string" and (. == $f or startswith($f + ":")))' "$1" >/dev/null 2>&1 \
+      || printf '%s\n' "$f"
+  done
 }
 
 # Turns an ollama result envelope into $out, or leaves $out absent. Absent is the right
@@ -475,7 +494,7 @@ review_slice() {
   # pin reshuffles which files land in c01, and an index-only key would serve those stale
   # findings for a different file set.
   hit="$cache/$key-$scope-$(cat "$diff" "$@" | cksum | awk '{print $1}').json"
-  if [ "$NO_CACHE" -eq 0 ] && slice_ok "$hit"; then
+  if [ "$NO_CACHE" -eq 0 ] && slice_ok "$hit" "$diff"; then
     cp "$hit" "$out"
     printf '    %-7s cached  %s finding(s)\n' "$key" "$(jq '.findings|length' "$out")" >&2
     : > "$WORK/done/$key"
@@ -522,11 +541,13 @@ review_slice() {
   jq -L "$HERE" -r 'include "last-event"; quota_hit' \
     "$WORK/chunks/$key.json" > "$WORK/chunks/$key.quota" 2>/dev/null || true
   [ ! -s "$WORK/chunks/$key.quota" ] || mv "$WORK/chunks/$key.quota" "$WORK/quota"
-  if slice_ok "$out"; then
+  if slice_ok "$out" "$diff"; then
     cp "$out" "$hit"
     printf '    %-7s %s finding(s)\n' "$key" "$(jq '.findings|length' "$out")" >&2
   else
-    if jq -e '(.findings|type=="array") and (.findings|length==0) and
+    if [ -s "$out" ] && jq -e '(.findings|type=="array") and (.findings|length==0) and (.read|type=="array" and length>0)' "$out" >/dev/null 2>&1; then
+      why="empty result without full coverage: \"checked\" does not name $(slice_unchecked "$out" "$diff" | head -3 | paste -sd, -)"
+    elif jq -e '(.findings|type=="array") and (.findings|length==0) and
               ((.read|type!="array") or (.read|length==0))' "$out" >/dev/null 2>&1; then
       why='no-op: no findings and nothing read'
     elif [ -s "$WORK/chunks/$key.json" ]; then

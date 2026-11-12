@@ -336,6 +336,30 @@ task_rules() {
   [ ${#ANALYZE_ONLY[@]} = 0 ] \
     || echo "Packages matching ${ANALYZE_ONLY[*]} need a live environment that isn't here: run \`dart analyze\` there instead."
   echo "Do not commit; your working-tree changes are the result."
+  standards_rules
+}
+# standards_rules -- the engineering and security standards the code must follow, inlined: the
+# implementer is told to stay inside this tree, so a path to ~/work would be out of bounds.
+# AUTOFIX_STANDARDS lists the files (default: SE.md and SECURITY.md under $HOME/work); one that
+# is missing is skipped with a warning, so a host without them still runs.
+standards_rules() {
+  local f any=0
+  for f in ${AUTOFIX_STANDARDS:-$HOME/work/SE.md $HOME/work/SECURITY.md}; do
+    if [ -s "$f" ]; then
+      if [ "$any" = 0 ]; then
+        echo
+        echo "Your change is also held to the standards below. Build to the rules that touch the"
+        echo "code you edit: reviewers cite violations by ID, and a violation is a defect even when"
+        echo "the tests pass. Do not edit anything outside the defects you were given to satisfy them."
+        any=1
+      fi
+      echo
+      echo "=== $(basename "$f") ==="
+      cat "$f"
+    else
+      warn "standards file $f not found; the implementer is not told its rules"
+    fi
+  done
 }
 
 # lint_prepass -- in the implementer's tree: `dart fix` each touched package for the codes it

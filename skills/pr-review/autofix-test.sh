@@ -151,6 +151,9 @@ JSON
          STUB_ME=me STUB_BLAME=bob STUB_EDIT_RC=0 STUB_DART_RC=0 STUB_ANALYZE_RC=0 STUB_ANALYZE_OLD="" STUB_ANALYZE_NEW="" STUB_CLAUDE_RC=0 STUB_CREATE_RC=0 STUB_DART_STDIN="" \
          STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success STUB_CLAUDE_SH="" STUB_CLAUDE_OUT="" STUB_OLLAMA_OUT=""
   unset OLLAMA_API_KEY AUTOFIX_IMPLEMENTERS AUTOFIX_OLLAMA_MODEL AUTOFIX_DEFER_FALLBACK AUTOFIX_LINT_LEVEL AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_LANE AUTOFIX_TRUNK_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE AUTOFIX_ANALYZE_ONLY
+  # Hermetic: the standards the implementer is told about are fixtures, not the host's ~/work.
+  mkdir -p "$C/std"; printf 'SE-1 one concern\n' > "$C/std/SE.md"; printf 'SEC-1 identity\n' > "$C/std/SECURITY.md"
+  export AUTOFIX_STANDARDS="$C/std/SE.md $C/std/SECURITY.md"
   REFS_BEFORE="$(refs)"
 }
 # patch [--no-fix] <file>... -- the implementer's patch adds each <file>, alongside the a.dart
@@ -237,6 +240,8 @@ check "no reviewer request without AUTOFIX_REVIEWER" never gh "pr edit"
 check "freezes nothing"                        [ ! -e "$FROZEN" ]
 check "task carries the CONFIRMED finding"     logged task.md "Old value leaks past the reset"
 check "task omits the UNVERIFIABLE finding"    never task.md "Possibly racy"
+check "task carries the standards, inlined"       logged task.md "=== SE.md ==="
+check "  and SECURITY.md"                          logged task.md "=== SECURITY.md ==="
 check "body is one bullet per finding"          logged body "- \`pkg/lib/a.dart:1\` — Old value leaks past the reset."
 check "  carrying only the claim's first sentence" never body "A second reset()"
 check "  and leaving the mechanism to the review"  never body "reset() returns before clearing the cache"
