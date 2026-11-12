@@ -64,6 +64,7 @@ To choose models yourself:
 
 - **`manual`:** skips the probes and takes the first rows.
 - **Pins:** set `PR_REVIEW_FINDERS`, `PR_REVIEW_REFUTER`, `PR_REVIEW_INTENSE_FINDERS` or `PR_REVIEW_INTENSE_REFUTER`. A pin is used as written.
+- **Refuter order:** the default chain is the preset's *reachable* refuter rows in table order (agy, then ollama, then claude opus), tried within one run. It is built only when none of `PR_REVIEW_REFUTER`, `PR_REVIEW_GEMINI_MODEL`, `PR_REVIEW_CROSS` (intense `--cross`) or `PR_REVIEW_REFUTER_CHAIN` is set and `PR_REVIEW_REFUTER_FALLBACK` is unset. An explicit `PR_REVIEW_REFUTER_CHAIN` (space-separated `transport:model` specs) wins.
 
 ```text
 $ review-skills models          # claude only

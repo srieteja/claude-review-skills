@@ -39,9 +39,11 @@ chmod +x "$SB/bin/agy"
 # account returns: a result event with is_error and api_error_status, nothing on stderr.
 cat > "$SB/bin/claude" <<'STUB'
 #!/usr/bin/env bash
-p=""; prev=""
-for a in "$@"; do [ "$prev" = -p ] && p="$a"; prev="$a"; done
+p=""; prev=""; cm=""; ce=""
+for a in "$@"; do [ "$prev" = -p ] && p="$a"; [ "$prev" = --model ] && cm="$a"; [ "$prev" = --effort ] && ce="$a"; prev="$a"; done
 echo "claude" >> "$STUB_CALLS"
+echo "$cm${ce:+@$ce}" >> "$STUB_CALLS.models"
+case " ${STUB_CLAUDE_QUOTA_MODELS:-} " in *" $cm "*) STUB_CLAUDE_STATUS=403 ;; esac
 [ -z "${STUB_TOKEN_LOG:-}" ] || printf '%s' "${ANTHROPIC_AUTH_TOKEN:-}" > "$STUB_TOKEN_LOG"
 [ -z "${STUB_ENV_LOG:-}" ] || printf 'base=%s simple=%s ollama=%s\n' \
   "${ANTHROPIC_BASE_URL:-}" "${CLAUDE_CODE_SIMPLE:-}" "${OLLAMA_API_KEY:+set}" > "$STUB_ENV_LOG"
@@ -55,7 +57,7 @@ STUB
 chmod +x "$SB/bin/claude"
 export OLLAMA_API_KEY=stub
 export PATH="$SB/bin:$PATH" REVIEW_SKILLS_CONFIG="$SB/no-config"
-unset PR_REVIEW_REFUTER_FALLBACK STUB_QUOTA_MODELS STUB_FAIL STUB_CLAUDE_STATUS STUB_CLAUDE_RESULT
+unset PR_REVIEW_REFUTER_FALLBACK STUB_CLAUDE_QUOTA_MODELS STUB_QUOTA_MODELS STUB_FAIL STUB_CLAUDE_STATUS STUB_CLAUDE_RESULT
 
 claims() { # id...
   printf '{"findings":['
@@ -71,7 +73,7 @@ bad() { printf '  \033[31m✗\033[0m %s\n' "$1"; fail=1; }
 check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$name"; else bad "$name"; fi; }
 
 run() { # args...  (claims in $SB/f.json)
-  W="$SB/w.$RANDOM"; : > "$SB/calls"
+  W="$SB/w.$RANDOM"; : > "$SB/calls"; : > "$SB/calls.models"
   STUB_CALLS="$SB/calls" "$HERE/refute" --findings "$SB/f.json" --tree "$SB/repo" --root "$SB/repo" \
     --work "$W" --jobs 1 "$@" > "$SB/out" 2>&1
   RC=$?
@@ -126,6 +128,14 @@ check "  verdict records the primary"               [ "$(verdict anthropic.c01-F
 STUB_CLAUDE_STATUS=403 run $OLL --cross
 check "opus finding, glm 403: gemini refutes it"    [ "$(calls)" = "claude gemini-x" ]
 check "  verdict records the cross model"           [ "$(verdict anthropic.c01-F1 model)" = gemini-x ]
+
+claims anthropic.c01-F1 > "$SB/f.json"
+STUB_CLAUDE_STATUS=401 run $OLL --cross
+check "glm signed out (401): moves to the next link, like a 403" [ "$(calls)" = "claude gemini-x" ]
+
+claims anthropic.c01-F1 > "$SB/f.json"
+STUB_CLAUDE_STATUS=402 run $OLL --cross
+check "glm unpaid (402): moves to the next link too" [ "$(calls)" = "claude gemini-x" ]
 
 claims agy.c01-F1 > "$SB/f.json"
 STUB_CLAUDE_STATUS=403 run $OLL --cross
@@ -186,6 +196,46 @@ printf 'OLLAMA_API_KEY=from-config\n' > "$SB/config.env"; chmod 600 "$SB/config.
 ( unset OLLAMA_API_KEY; REVIEW_SKILLS_CONFIG="$SB/config.env" STUB_TOKEN_LOG="$SB/token" run $OLL; exit "$RC" )
 check "the ollama key can come from the config file" [ "$?" = 0 ]
 check "  and reaches the transport"                 [ "$(cat "$SB/token" 2>/dev/null)" = from-config ]
+
+echo "refuter chain: agy, then ollama, then claude"
+unset PR_REVIEW_GEMINI_MODEL PR_REVIEW_REFUTER_FALLBACK
+CH="agy:g1 ollama:glm-x anthropic:opus-x@medium"
+claims F1 > "$SB/f.json"
+run --chain "$CH"
+check "healthy head: only agy runs"                 [ "$(calls)" = g1 ]
+STUB_QUOTA_MODELS=g1 run --chain "$CH"
+check "agy out of quota: ollama refutes next"       [ "$(calls)" = "g1 claude" ]
+check "  through glm, not opus"                     [ "$(cat "$SB/calls.models")" = glm-x ]
+check "  verdict records glm"                       [ "$(verdict F1 model)" = glm-x ]
+STUB_QUOTA_MODELS=g1 STUB_CLAUDE_QUOTA_MODELS=glm-x run --chain "$CH"
+check "agy and ollama out: claude opus at medium"   [ "$(cat "$SB/calls.models" | tr '\n' ' ')" = "glm-x opus-x@medium " ]
+check "  verdict records opus"                      [ "$(verdict F1 model)" = opus-x ]
+STUB_QUOTA_MODELS=g1 STUB_CLAUDE_QUOTA_MODELS="glm-x opus-x" run --chain "$CH"
+check "every link out of quota: claim is ERROR"     [ "$(verdict F1 verdict)" = ERROR ]
+claims F1 F2 > "$SB/f.json"
+STUB_QUOTA_MODELS=g1 run --chain "$CH"
+check "a spent link is skipped by later claims"     [ "$(calls)" = "g1 claude claude" ]
+PR_REVIEW_REFUTER_CHAIN="$CH" STUB_QUOTA_MODELS=g1 run
+check "PR_REVIEW_REFUTER_CHAIN is the same chain"   [ "$(cat "$SB/calls.models" | tr '\n' ' ')" = "glm-x glm-x " ]
+
+( unset OLLAMA_API_KEY; claims F1 > "$SB/f.json"; STUB_QUOTA_MODELS=g1 run --chain "$CH"; exit "$RC" )
+check "chain without an ollama key drops that link" [ "$?" = 0 ]
+unset OLLAMA_API_KEY; STUB_QUOTA_MODELS=g1 run --chain "$CH"; export OLLAMA_API_KEY=stub
+check "  and moves from agy straight to opus"       [ "$(cat "$SB/calls.models")" = opus-x@medium ]
+
+echo "refuter chain: malformed input is refused before any call"
+refused() { [ "$RC" -ne 0 ] && grep -q "$1" "$SB/out"; }
+claims F1 > "$SB/f.json"
+for flag in --findings --tree --root --work --jobs --transport --model --chain --burden --timeout; do
+  : > "$SB/calls"
+  STUB_CALLS="$SB/calls" "$HERE/refute" "$flag" > "$SB/out" 2>&1; RC=$?
+  check "$flag with no value fails naming the flag" refused "refute: $flag needs a value"
+done
+for bad in "agy:" ":m" "agy" "bogus:m" "agy:g1 ollama:" "agy:g1 :m"; do
+  run --chain "$bad"
+  check "chain entry set '$bad' is refused before any call" refused "refuter chain entry"
+  check "  and no call was made" [ -z "$(calls)" ]
+done
 
 [ "$fail" = 0 ] && echo "all passed" || { echo FAILURES; cat "$SB/out"; }
 exit "$fail"

@@ -157,6 +157,11 @@ for a in "$@"; do
   [ "$prev" = --json-schema ] && schema="$a"
   prev="$a"
 done
+# What lib/models.sh probes: the models agy serves, or nothing when STUB_AGY_DOWN is set.
+if [ "${1:-}" = models ]; then
+  [ -z "${STUB_AGY_DOWN:-}" ] || { echo "not signed in" >&2; exit 1; }
+  printf 'gemini-3.8-flash-high\tGemini 3.8 Flash (high)\n'; exit 0
+fi
 case "$schema" in
   *findings.schema.json)
     stub_log agy-find "$@"
@@ -289,14 +294,14 @@ check "the refuter judges the code at this head, not only what the PR introduced
 check "merged.json carries a route on every finding" \
   jq -e 'length > 0 and all(.[]; .route == "introduced" or .route == "pre-existing")' "$MERGED"
 check "the report shows each finding's route" grep -qE '· (introduced|pre-existing)$' "$REPORT"
-check "the default finder ran at xhigh" every claude-find '^arg=xhigh$'
+check "the default finder ran at medium" every claude-find '^arg=medium$'
 check "the default finder is budget-capped" every claude-find '^arg=--max-budget-usd$'
 check "the finder ran without your settings and hooks" every claude-find '^arg=--setting-sources$'
 
 # ------------------------------------------------------------------ stage 0.5 brief
 check "the brief was written beside the report" test -f "$BRIEF"
 check "the brief ran on sonnet" every claude-brief '^arg=claude-sonnet-5-5$'
-check "the brief ran at medium effort, not the finder's xhigh" every claude-brief '^arg=medium$'
+check "the brief ran at medium effort, same as the finder's default" every claude-brief '^arg=medium$'
 check "the brief is guarded, not budgeted" every claude-brief '^arg=1\.00$'
 check "the brief had no tools to wander with" every claude-brief '^arg=Read$'
 check "the brief saw no local CLAUDE.md or skills" every claude-brief '^arg=--setting-sources$'
@@ -375,6 +380,52 @@ check "  and flags it as the finder's own family" \
   grep -q '^> ⚠️ \*\*Same-family refuter' "$d/$AUTHOR/widgets/$PIN_PR/pr${PIN_PR}-review.md"
 check "  on stderr too" grep -q 'same model family' "$d.log"
 check "a cross-family refuter is not flagged" absent "$REPORT" 'Same-family refuter'
+
+echo "refuter chain — an explicit PR_REVIEW_REFUTER_CHAIN wins over the computed one"
+d="$SANDBOX/chain-explicit"
+env PR_REVIEW_DIR="$d" PR_REVIEW_REFUTER_CHAIN=agy:gemini-chain-x PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" \
+  "$HERE/pr-review.sh" "$PIN_PR" --no-brief --no-cache > "$d.log" 2>&1 || { cat "$d.log"; bad "explicit-chain run exited non-zero"; }
+check "the refuter is the one the chain names" logged agy-refute 'gemini-chain-x'
+
+# The default chain is built in pr-review.sh, so it is observed where refute receives it: a copy
+# of the skill directory (symlinks, lib included) whose refute logs its argv and runs the real one.
+# Probes are stubbed so agy, ollama and claude all answer.
+echo "refuter chain — the default is the reachable rows of the preset, in table order"
+MIR="$SANDBOX/mirror"; mkdir -p "$MIR/skills/pr-review" "$SANDBOX/stub-net"
+ln -s "$HERE/../../lib" "$MIR/lib"
+for f in "$HERE"/../*; do [ "$f" = "$HERE" ] || ln -s "$f" "$MIR/skills/$(basename "$f")"; done
+for f in "$HERE"/*; do [ "$(basename "$f")" = refute ] || ln -s "$f" "$MIR/skills/pr-review/$(basename "$f")"; done
+cat > "$MIR/skills/pr-review/refute" <<SHIM
+#!/usr/bin/env bash
+printf '%s\\n' "\$@" > "$SANDBOX/refute.args"
+exec "$HERE/refute" "\$@"
+SHIM
+chmod +x "$MIR/skills/pr-review/refute"
+cat > "$SANDBOX/stub-net/curl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  */v1/models*) printf '{"data":[{"id":"glm-5.3-flash"},{"id":"deepseek-v4.1-flash"}]}' ;;
+  */v1/messages*) cat > /dev/null; printf 200 ;;
+  *) exit 64 ;;
+esac
+STUB
+chmod +x "$SANDBOX/stub-net/curl"
+chain_run() {  # chain_run <name> [VAR=val...]: the --chain refute was given, "-" when none
+  d="$SANDBOX/chain-$1"; shift; rm -f "$SANDBOX/refute.args"
+  env PR_REVIEW_DIR="$d" REVIEW_SKILLS_MODELS=auto REVIEW_SKILLS_CACHE="$d-cache" OLLAMA_API_KEY=k-oll \
+    PATH="$SANDBOX/stub-net:$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$@" \
+    "$MIR/skills/pr-review/pr-review.sh" "$PIN_PR" --no-brief --no-cache > "$d.log" 2>&1 || true
+  [ -s "$SANDBOX/refute.args" ] || { echo "refute was not run"; return 1; }
+  awk 'p { print; found = 1; exit } $0 == "--chain" { p = 1 } END { if (!found) print "-" }' "$SANDBOX/refute.args"
+}
+check "no pins, every row reachable: agy, then ollama, then claude" \
+  test "$(chain_run default)" = "agy:gemini-3.8-flash-high ollama:glm-5.3-flash anthropic:claude-opus-5-5"
+check "an unreachable row (agy signed out) is skipped" \
+  test "$(chain_run noagy STUB_AGY_DOWN=1)" = "ollama:glm-5.3-flash anthropic:claude-opus-5-5"
+check "PR_REVIEW_REFUTER pins a single refuter: no chain" test "$(chain_run pin PR_REVIEW_REFUTER=agy:gemini-pin)" = "-"
+check "PR_REVIEW_REFUTER_FALLBACK set (even empty): no chain" test "$(chain_run fallback PR_REVIEW_REFUTER_FALLBACK=)" = "-"
+check "PR_REVIEW_REFUTER_CHAIN set: pr-review adds none, refute reads the explicit one" \
+  test "$(chain_run explicit PR_REVIEW_REFUTER_CHAIN=agy:gemini-chain-y)" = "-"
 
 echo "claude signed out — the brief is skipped, the review runs"
 d="$SANDBOX/claude-out"
@@ -490,7 +541,7 @@ rm -rf "$STUB_LOG"; mkdir -p "$STUB_LOG"
 STUB_SLOW_CROSS=4 PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --sonnet --no-cache --no-brief \
   > "$SANDBOX/run5.log" 2>&1 || true
 check "--sonnet reaches the finder" every claude-find '^arg=claude-sonnet-5-5$'
-check "--sonnet keeps the finder's effort" every claude-find '^arg=xhigh$'
+check "--sonnet keeps the finder's effort" every claude-find '^arg=medium$'
 check "--no-brief fires no brief call" nolog claude-brief
 check "--no-brief is reported, not silent" grep -q 'brief skipped' "$SANDBOX/run5.log"
 check "--no-brief checks no diagram" bash -c "! grep -q 'diagram' '$SANDBOX/run5.log'"

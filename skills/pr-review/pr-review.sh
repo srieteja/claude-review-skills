@@ -133,6 +133,20 @@ REF="$PR"; parse_pr_ref "$REF" || die "PR must be N, owner/repo#N or a PR URL, g
 # after the arg loop so --sonnet, parsed above, beats the resolved finders.
 resolve_models "$PRESET" || exit 1
 REFUTER="$RESOLVED_REFUTER"
+# An unpinned refuter is a chain, not one model: the resolved row first, then every other
+# reachable row of the preset in table order (agy, then ollama, then claude). refute moves down
+# it when a model is out of quota mid-run. A pin, an empty PR_REVIEW_REFUTER_FALLBACK, or the
+# intense preset's --cross (which has its own fallback) keeps the single refuter. An explicit
+# PR_REVIEW_REFUTER_CHAIN is not touched here: refute reads it from the environment and it wins.
+REFUTER_CHAIN=""
+if [ -z "${PR_REVIEW_REFUTER:-}${PR_REVIEW_GEMINI_MODEL:-}${PR_REVIEW_CROSS:-}${PR_REVIEW_REFUTER_CHAIN:-}" ] && [ -z "${PR_REVIEW_REFUTER_FALLBACK+x}" ]; then
+  REFUTER_CHAIN="$REFUTER"
+  for spec in $(_rows "$PRESET" refuter); do
+    _spec_reachable "$spec" || continue
+    case " $REFUTER_CHAIN " in *" $spec "*) continue ;; esac
+    REFUTER_CHAIN="$REFUTER_CHAIN $spec"
+  done
+fi
 if [ "$SONNET" -eq 1 ]; then
   [ -z "${PR_REVIEW_FINDERS:-}" ] || warn "--sonnet overrides PR_REVIEW_FINDERS"
   FINDERS="anthropic:$SONNET_MODEL${S1_EFFORT:+@$S1_EFFORT}"
@@ -712,7 +726,8 @@ fi
 rc=0
 "$HERE/refute" --findings "$WORK/findings.json" --tree "$TREE" --root "$ROOT" \
   --work "$WORK" --jobs "$JOBS" --transport "$R_TRANSPORT" --model "$R_MODEL" \
-  --burden "$BURDEN" --timeout "$REFUTE_TIMEOUT" ${CROSS:+--cross} || rc=$?
+  --burden "$BURDEN" --timeout "$REFUTE_TIMEOUT" ${CROSS:+--cross} \
+  ${REFUTER_CHAIN:+--chain "$REFUTER_CHAIN"} || rc=$?
 case "$rc" in
   0) ;;
   3) KEEP=1 ;;

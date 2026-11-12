@@ -28,6 +28,7 @@ load_config
 
 TRANSPORT=agy
 MODEL=""
+CHAIN_IN="${PR_REVIEW_REFUTER_CHAIN:-}"
 BURDEN=strict
 CROSS=0
 TIMEOUT="${PR_REVIEW_AGY_TIMEOUT:-20m}"
@@ -67,18 +68,22 @@ USAGE
   exit 1
 }
 
+# need_value "$@": inside a flag's case arm, dies naming the flag when no value follows it.
+need_value() { [ $# -ge 2 ] || die "$1 needs a value"; }
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --findings) FINDINGS="$2"; shift ;;
-    --tree) TREE="$2"; shift ;;
-    --root) ROOT="$2"; shift ;;
-    --work) WORK="$2"; shift ;;
-    --jobs) JOBS="$2"; shift ;;
-    --transport) TRANSPORT="$2"; shift ;;
-    --model) MODEL="$2"; shift ;;
+    --findings) need_value "$@"; FINDINGS="$2"; shift ;;
+    --tree) need_value "$@"; TREE="$2"; shift ;;
+    --root) need_value "$@"; ROOT="$2"; shift ;;
+    --work) need_value "$@"; WORK="$2"; shift ;;
+    --jobs) need_value "$@"; JOBS="$2"; shift ;;
+    --transport) need_value "$@"; TRANSPORT="$2"; shift ;;
+    --model) need_value "$@"; MODEL="$2"; shift ;;
+    --chain) need_value "$@"; CHAIN_IN="$2"; shift ;;
     --cross) CROSS=1 ;;
-    --burden) BURDEN="$2"; shift ;;
-    --timeout) TIMEOUT="$2"; shift ;;
+    --burden) need_value "$@"; BURDEN="$2"; shift ;;
+    --timeout) need_value "$@"; TIMEOUT="$2"; shift ;;
     -h|--help) usage ;;
     *) die "unknown option: $1" ;;
   esac
@@ -121,16 +126,40 @@ case "$TRANSPORT" in
     NEED="git jq claude"; [ "$CROSS" = 0 ] || NEED="$NEED agy" ;;
   *) die "unknown --transport: $TRANSPORT (agy|anthropic|ollama)" ;;
 esac
+# --chain / PR_REVIEW_REFUTER_CHAIN: transport:model[@effort] entries tried in order, each only
+# when the one before is out of quota or unavailable -- agy, then ollama, then claude. It
+# replaces the single transport's own fallback (agy's models, --cross).
+CHAIN_TRANSPORTS="$TRANSPORT"
+if [ -n "$CHAIN_IN" ]; then
+  # A link whose prerequisites are missing (no ollama key, no agy or claude binary) is dropped
+  # with a warning: a fallback that cannot run must not stop the links that can.
+  CHAIN=""; NEED="git jq"; CHAIN_TRANSPORTS=""
+  for e in $CHAIN_IN; do
+    case "$e" in
+      *:*) [ -n "${e%%:*}" ] && [ -n "${e#*:}" ] && [ "${e#*:}" != "@${e#*@}" ] || die "bad refuter chain entry: $e (want transport:model[@effort])" ;;
+      *) die "bad refuter chain entry: $e (want transport:model[@effort])" ;;
+    esac
+    case "${e%%:*}" in
+      agy) have=agy ;;
+      anthropic) have=claude ;;
+      ollama) have=claude; [ -n "${OLLAMA_API_KEY:-}" ] || { warn "refuter chain: dropping $e (OLLAMA_API_KEY is unset)"; continue; } ;;
+      *) die "unknown transport in refuter chain entry: $e (agy|anthropic|ollama)" ;;
+    esac
+    command -v "$have" >/dev/null 2>&1 || { warn "refuter chain: dropping $e ($have not found)"; continue; }
+    CHAIN="${CHAIN:+$CHAIN }$e"; NEED="$NEED $have"; CHAIN_TRANSPORTS="$CHAIN_TRANSPORTS ${e%%:*}"
+  done
+  [ -n "$CHAIN" ] || die "no entry of the refuter chain is usable: $CHAIN_IN"
+fi
 for bin in $NEED; do
   command -v "$bin" >/dev/null 2>&1 || die "$bin not found on PATH"
 done
 
 TIMEOUT_BIN=""
-case "$TRANSPORT" in anthropic|ollama)
+case " $CHAIN_TRANSPORTS " in *" anthropic "*|*" ollama "*)
   for b in timeout gtimeout; do command -v "$b" >/dev/null 2>&1 && { TIMEOUT_BIN="$b"; break; }; done
   [ -n "$TIMEOUT_BIN" ] || die "--transport $TRANSPORT needs timeout or gtimeout on PATH" ;;
 esac
-[ "$TRANSPORT" != ollama ] || [ -n "${OLLAMA_API_KEY:-}" ] || die "--transport ollama needs OLLAMA_API_KEY"
+case " $CHAIN_TRANSPORTS " in *" ollama "*) [ -n "${OLLAMA_API_KEY:-}" ] || die "an ollama refuter needs OLLAMA_API_KEY" ;; esac
 
 WORK="${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/refute.XXXXXX")}"
 mkdir -p "$WORK/claims" "$WORK/verdicts" "$WORK/exhausted"
@@ -159,12 +188,12 @@ repo_state > "$WORK/repo.pre"
 
 say "${CHAIN// / -> } refuting $COUNT claim(s), $BURDEN burden, $JOBS at a time"
 # Whether a failed call means the model itself is gone for now, as opposed to a bad answer.
-# agy says so on stderr; claude reports a spent, unpaid or rejected account only in the
-# result event.
+# agy says so on stderr; claude reports a spent, unpaid, signed-out or rejected account only in the
+# result event. Another model may well be signed in, so a refused link moves on, never fails the run.
 unavailable() { # transport err-file raw-file
   case "$1" in
     agy) agy_quota_hit "$2" ;;
-    *) jq -e -L "$HERE" 'include "last-event"; quota_hit' "$3" >/dev/null 2>&1 ;;
+    *) jq -e -L "$HERE" 'include "last-event"; refused' "$3" >/dev/null 2>&1 ;;
   esac
 }
 
@@ -178,7 +207,9 @@ eligible() { # id entry
 }
 
 ask_validator() { # id attempt entry
-  id="$1"; attempt="$2"; t="${3%%:*}"; m="${3#*:}"
+  id="$1"; attempt="$2"; t="${3%%:*}"; m="${3#*:}"; eff=""
+  case "$m" in *@*) eff="${m#*@}"; m="${m%@*}" ;; esac
+  effargs=(); [ "$t" != anthropic ] || [ -z "$eff" ] || effargs=(--effort "$eff")
   # Every transport starts in the tree. agy additionally gets --add-dir; claude has no tool
   # that writes or runs anything (on ollama, the CLAUDE_CODE_SIMPLE surface minus Bash and
   # Edit). anthropic and ollama differ only in the environment that routes the call.
@@ -190,6 +221,7 @@ ask_validator() { # id attempt entry
          anthropic|ollama)
            "${t}_env" "$TIMEOUT_BIN" "$TIMEOUT" \
              claude -p "$(cat "$WORK/claims/$id.prompt")" --model "$m" \
+             ${effargs[@]+"${effargs[@]}"} \
              --output-format json --json-schema "$SCHEMA_INLINE" \
              --strict-mcp-config --setting-sources "" \
              --disallowedTools Bash Write Edit NotebookEdit Task WebSearch WebFetch ;;
