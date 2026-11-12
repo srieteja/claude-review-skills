@@ -1,7 +1,8 @@
 # transport-env.sh -- the credential-isolation contracts, one wrapper per transport. Sourced by
 # common.sh, never executed. Each wrapper runs its arguments with only the credential that
 # transport needs: anthropic_env the caller's Claude login (or, with ANTHROPIC_USE_API_KEY=1,
-# ANTHROPIC_API_KEY); ollama_env OLLAMA_API_KEY as the Bearer token for ollama.com; agy_env
+# ANTHROPIC_API_KEY); ollama_env (a nested claude) and ollama_api_env (the direct client)
+# OLLAMA_API_KEY as the Bearer token for ollama.com; agy_env
 # none, since agy signs in on its own. Every other key, and every endpoint override, is
 # stripped, so no review prompt reaches a provider on a key meant for another.
 #
@@ -34,16 +35,51 @@
 # background call and always resolves. ANTHROPIC_MODEL is unset instead -- `--model` on argv is the
 # single source of truth for the main model -- and ANTHROPIC_CUSTOM_HEADERS is stripped because a
 # header set for the user's own Anthropic account has no business on an ollama.com request.
+# ollama.com's origin: the one place bash names it (ollama_env, lib/models.sh, and the
+# --endpoint handed to lib/ollama_messages.py, which names no URL itself). A plain
+# assignment, not read from the environment, so no inherited variable can move the Bearer key.
+# It is also in _CRED_VARS, so an exported copy never reaches a child: the client reads no
+# environment and takes only the --endpoint expanded from this shell variable.
+OLLAMA_ORIGIN="https://ollama.com"
+
+# The strip list every wrapper starts from: each credential, token and routing override that could
+# send a call to a provider on a key or endpoint meant for another. A wrapper removes all of them
+# (_strip_args), then adds back only what it passes itself; anthropic_env keeps the login's own
+# CLAUDE_CODE_OAUTH_TOKEN.
+_CRED_VARS=(ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_CUSTOM_HEADERS
+            ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
+            CLAUDE_CODE_SIMPLE CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_OAUTH_TOKEN
+            GEMINI_API_KEY OLLAMA_API_KEY OLLAMA_ORIGIN)
+# _strip_args [keep ...]: sets _STRIP to the `-u NAME` arguments for _CRED_VARS less the names kept.
+_strip_args() {
+  local v k
+  _STRIP=()
+  for v in "${_CRED_VARS[@]}"; do
+    for k in "$@"; do [ "$v" != "$k" ] || continue 2; done
+    _STRIP+=(-u "$v")
+  done
+}
+
+# ollama_api_env() -- runs its arguments (lib/ollama_messages.py) with OLLAMA_API_KEY as the only
+# credential: every other key, token and endpoint override is removed. OLLAMA_API_KEY is passed
+# explicitly because common.sh loads it from config.env as a shell variable, not an exported one;
+# when it is empty it is left unset, and the client says so.
+ollama_api_env() {
+  _strip_args
+  env "${_STRIP[@]}" \
+      ${OLLAMA_API_KEY:+"OLLAMA_API_KEY=$OLLAMA_API_KEY"} \
+      "$@"
+}
+
 # Runs its arguments with every credential and endpoint override that could route a nested
 # `claude` somewhere other than ollama.com removed from the environment.
 ollama_env() {
-  env -u ANTHROPIC_API_KEY -u OLLAMA_API_KEY -u GEMINI_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
-      -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX \
-      -u ANTHROPIC_MODEL -u ANTHROPIC_CUSTOM_HEADERS \
+  _strip_args
+  env "${_STRIP[@]}" \
       CLAUDE_CODE_SIMPLE=1 \
       ANTHROPIC_SMALL_FAST_MODEL="$MODEL" \
       ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL" \
-      ANTHROPIC_BASE_URL="https://ollama.com" \
+      ANTHROPIC_BASE_URL="$OLLAMA_ORIGIN" \
       ANTHROPIC_AUTH_TOKEN="$OLLAMA_API_KEY" \
       "$@"
 }
@@ -62,17 +98,16 @@ anthropic_env() {
   local key=""
   anthropic_key_check || return 1
   [ "${ANTHROPIC_USE_API_KEY:-}" != 1 ] || key="$ANTHROPIC_API_KEY"
-  env -u ANTHROPIC_API_KEY -u OLLAMA_API_KEY -u GEMINI_API_KEY \
-      -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_CUSTOM_HEADERS \
-      -u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL \
-      -u CLAUDE_CODE_SIMPLE -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX \
+  _strip_args CLAUDE_CODE_OAUTH_TOKEN
+  env "${_STRIP[@]}" \
       ${key:+"ANTHROPIC_API_KEY=$key"} \
       "$@"
 }
 
 # agy_env() -- agy authenticates through its own sign-in and reads none of these.
 agy_env() {
-  env -u ANTHROPIC_API_KEY -u OLLAMA_API_KEY -u GEMINI_API_KEY \
-      -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_BASE_URL \
+  _strip_args
+  env "${_STRIP[@]}" \
+      ${AGY_HOME:+"HOME=$AGY_HOME"} \
       "$@"
 }

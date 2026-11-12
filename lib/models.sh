@@ -36,7 +36,7 @@ ollama_answers() {
     | curl -sS -K - -o /dev/null -w '%{http_code}' --max-time 10 \
         -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
         -d "{\"model\":\"$1\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}" \
-        https://ollama.com/v1/messages 2>/dev/null)" || OLLAMA_HTTP="${OLLAMA_HTTP:-none}"
+        "$OLLAMA_ORIGIN/v1/messages" 2>/dev/null)" || OLLAMA_HTTP="${OLLAMA_HTTP:-none}"
   [ "$OLLAMA_HTTP" = 200 ]
 }
 
@@ -54,7 +54,7 @@ agy_list() {
 ollama_list() {
   local ids m
   [ -n "${OLLAMA_API_KEY:-}" ] || return 1
-  ids="$(curl -sS --max-time 10 https://ollama.com/v1/models 2>/dev/null | jq -r '.data[].id' 2>/dev/null)" || return 1
+  ids="$(curl -sS --max-time 10 "$OLLAMA_ORIGIN/v1/models" 2>/dev/null | jq -r '.data[].id' 2>/dev/null)" || return 1
   for m in $(awk -F'\t' '$3 ~ /^ollama:/ { sub(/^ollama:/, "", $3); sub(/@.*/, "", $3); print $3 }' "$MODELS_TSV"); do
     printf '%s\n' "$ids" | grep -qxF "$m" || continue
     ollama_answers "$m" || return 1

@@ -38,15 +38,48 @@ HUNK = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@')
 CLAMP_LIMIT = 20   # lines; beyond this a "nearest" anchor is noise, not a hint
 
 
+def _page(page, repo, pr):
+    """One decoded page of the files listing; an error object is not a page."""
+    if not isinstance(page, list):
+        raise SystemExit(f"inline.py: gh api repos/{repo}/pulls/{pr}/files returned "
+                         f"{type(page).__name__}, not a list of files: {json.dumps(page)[:200]}")
+    return page
+
+
 def right_side_ranges(repo, pr):
     """{path: [(first, last), ...]} of lines addressable on the RIGHT side."""
     # --slurp wraps the pages in one array. Without it, --paginate concatenates raw
     # arrays and the caller has to split them by regex -- which a diff containing
     # "] [" silently truncates.
-    raw = subprocess.run(
+    res = subprocess.run(
         ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--slurp"],
-        capture_output=True, text=True, check=True).stdout
-    files = [f for page in json.loads(raw) for f in page]
+        capture_output=True, text=True)
+    if res.returncode == 0:
+        pages = json.loads(res.stdout)
+        if not isinstance(pages, list):
+            raise SystemExit(f"inline.py: gh api .../pulls/{pr}/files --slurp returned "
+                             f"{type(pages).__name__}, not a list of pages: {res.stdout[:200]}")
+        files = [f for page in pages for f in _page(page, repo, pr)]
+    else:
+        # Fallback for gh versions (e.g. 2.45.0) where --slurp is not supported
+        try:
+            raw = subprocess.run(
+                ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate"],
+                capture_output=True, text=True, check=True).stdout
+        except subprocess.CalledProcessError as e:
+            raise SystemExit(f"inline.py: gh api repos/{repo}/pulls/{pr}/files failed "
+                             f"(exit {e.returncode}): {(e.stderr or '').strip()[:200]}")
+        decoder = json.JSONDecoder()
+        pos = 0
+        files = []
+        while pos < len(raw):
+            raw_stripped = raw[pos:].lstrip()
+            if not raw_stripped:
+                break
+            pos = len(raw) - len(raw_stripped)
+            page, idx = decoder.raw_decode(raw[pos:])
+            files.extend(_page(page, repo, pr))
+            pos += idx
     out = {}
     for f in files:
         spans = []

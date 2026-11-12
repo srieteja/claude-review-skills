@@ -429,11 +429,15 @@ say "reviewing #$PR by $AUTHOR ($ENGINE)"
 # review resolves its own finders and refuter: regular pins and a preset in the environment are
 # dropped. --no-fix:
 # the fix PR is this script's decision, frozen for a human, not the engine's stage 5.
+review_rc=0
 if [ "$ENGINE" = intense ]; then
-  PR_REVIEW_INTENSE_DIR="$STORE" "$INTENSE" "$PR" ${PASS[@]+"${PASS[@]}"} --no-fix || die "the review of #$PR failed"
+  PR_REVIEW_INTENSE_DIR="$STORE" "$INTENSE" "$PR" ${PASS[@]+"${PASS[@]}"} --no-fix || review_rc=$?
 else
   env -u PR_REVIEW_FINDERS -u PR_REVIEW_REFUTER -u PR_REVIEW_PRESET PR_REVIEW_DIR="$STORE" \
-    "$REGULAR" "$PR" ${PASS[@]+"${PASS[@]}"} --no-fix || die "the review of #$PR failed"
+    "$REGULAR" "$PR" ${PASS[@]+"${PASS[@]}"} --no-fix || review_rc=$?
+fi
+if [ "$review_rc" -ne 0 ]; then
+  [ "$review_rc" -eq 75 ] && exit 75 || die "the review of #$PR failed"
 fi
 [ -s "$REPORT" ] || die "the review of #$PR wrote no report at $REPORT"
 

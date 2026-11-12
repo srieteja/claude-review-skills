@@ -35,8 +35,9 @@ brief is skipped.
 
 ### When Opus is unavailable
 
-`PR_REVIEW_TRANSPORT=ollama` routes **stage 1 only** through ollama.com's Anthropic-compat
-endpoint. Stage 2 is unaffected — the adversarial half of the review still runs.
+`PR_REVIEW_TRANSPORT=ollama` routes **stage 1 only** to ollama.com's `/v1/messages` API, called
+directly by `lib/ollama_messages.py` (no `claude` binary involved). Stage 2 is unaffected — the
+adversarial half of the review still runs.
 
 ```bash
 PR_REVIEW_TRANSPORT=ollama PR_REVIEW_S1_MODEL=glm-5.3-flash \
@@ -62,12 +63,11 @@ treating a PR as reviewed.**
 
 Two knobs behave differently there, both deliberately:
 
-- **No `--max-budget-usd`.** The compat layer prices an unrecognized model at Anthropic rates
-  and the flag *is* enforced against that fiction — a measured slice billed $4.16 of nothing.
-  `PR_REVIEW_S1_TIMEOUT` (default 25m) is the ceiling instead.
-- **No `Write` tool, so the model returns its findings on stdout.** `--allowedTools` is an
-  intersection, not a union: under `CLAUDE_CODE_SIMPLE=1` grant flags are silently ignored.
-  See `emit/README.md`.
+- **No `--max-budget-usd`.** The client reports no cost and has no dollar cap, so
+  `PR_REVIEW_S1_TIMEOUT` (default 25m, a positive `N`, `Ns`, `Nm` or `Nh`) is the ceiling.
+- **No `Write` tool, so the model returns its findings in its reply.** The client gives the
+  model `Read`, `Glob` and `Grep` only, each confined to the pinned clone, and takes the
+  findings object from the final text. See `emit/README.md`.
 
 Stage-1 slices are cached per **model, effort and transport**, so a flash run never gets served
 back under an Opus run's name.
@@ -232,9 +232,11 @@ further than a report: a companion PR with the fix, against that author's own br
    - Except a package matching `AUTOFIX_ANALYZE_ONLY` (space-separated globs on its dir, default `tests/*`): its tests need a live rig, so it gets `dart pub get && dart analyze --fatal-infos`. The PR body names each such package, and the implementer's prompt says not to run its tests. Set it empty to `dart test` every package.
    - Any failure, or a patch that doesn't apply cleanly, stops here with no PR.
 7. **On a clean gate, it commits exactly the staged patch** (none of `pub get`'s debris) on a detached HEAD, so no `fix/…` branch appears in your clone.
-   - The commit message is the PR title, then `Reviewed at <sha12>; the PR description carries each finding.` No finding text goes into history.
+   - The commit message is the PR title, then `Reviewed at <sha12>; the PR description carries each finding.` The title is the leading finding's own words; no more of the finding text goes into history.
    - It pushes `fix/pr<N>-review-findings-<sha12>` to origin's push URL, never forced and with no tags, and opens a PR against the reviewed PR's own head branch.
-   - The body is one line of context, then one bullet per finding: `file:line` — the claim's first sentence.
+   - The title says what the branch does, like the body: the leading defect's first sentence (`(+N more)` when it fixes several), never the review or PR that prompted it.
+   - The body says what the change does, not what prompted it: an opening line naming the defects this branch fixes (`Fixes these defects:`, or off the PR's branch `Fixes these defects already on <base> (they predate #N):`), then one bullet per finding: `file:line` — the claim's first sentence.
+   - The review, the PR it came from and the SHA it pinned are provenance, not the subject: the commit message carries the SHA, and the body tells a reader of this diff what it changes.
    - No walls of text: no headings, no footer, no mechanism. The diff shows the fix; the reasoning stays in the local review.
    - An `@` that starts a word in the finding text gets a word joiner (U+2060) after it, so `@override` or `@org/team` pings no one. An `@` after `_` counts, since `_@x_` renders as emphasis around a live mention. Email addresses are left alone. GitHub's own renderer (`gh api markdown`) links none of these.
 8. **When origin already has the fix branch but no PR** (a run whose `pr create` failed):

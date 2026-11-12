@@ -159,10 +159,8 @@ done
 [ "$NFINDERS" -gt 0 ] || die "PR_REVIEW_FINDERS is empty"
 
 # EMIT is how a finder hands back findings, and it is dictated by the transport, not a
-# preference: --allowedTools is an intersection, never a union. Under CLAUDE_CODE_SIMPLE=1
-# (load-bearing for auth on ollama, see lib/transport-env.sh) the harness ships a fixed tool
-# surface, grant flags are silently dropped, and there is no Write to give the model.
-# See emit/README.md.
+# preference: the ollama finder is the direct client (lib/ollama_messages.py), which has Read,
+# Glob and Grep and no Write, so the model returns its findings in its reply. See emit/README.md.
 #
 # load_finder <transport:model[@effort]> sets F_TRANSPORT F_MODEL F_EFFORT F_EMIT F_SCHEMA
 # F_LABEL F_NAME F_TAG F_PROMPT_ID F_CACHE_TAG. F_TAG prefixes slice keys and finding ids when
@@ -200,7 +198,7 @@ for f in $FINDERS; do
   load_finder "$f"
   case "$F_TRANSPORT" in
     anthropic) HAS_ANTHROPIC=1; F_NEED=claude ;;
-    ollama) HAS_OLLAMA_FINDER=1; F_NEED="claude python3" ;;
+    ollama) HAS_OLLAMA_FINDER=1; F_NEED=python3 ;;
     agy) HAS_AGY_FINDER=1; F_NEED=agy ;;
   esac
   [ -n "$FINDINGS_IN" ] || NEED="$NEED $F_NEED"
@@ -248,10 +246,8 @@ fi
 
 if [ "$HAS_OLLAMA_FINDER" -eq 1 ] || [ "$R_TRANSPORT" = ollama ]; then
   [ -n "${OLLAMA_API_KEY:-}" ] || die "an ollama finder or refuter needs OLLAMA_API_KEY"
-  # The only ceiling on an ollama finder. --max-budget-usd is dropped there because the
-  # compat layer prices an unrecognized model at Anthropic rates and the flag IS
-  # enforced against that fiction: one measured slice billed $4.16 of nothing against
-  # a $2.00 cap, and the slice would have been killed mid-review.
+  # The only ceiling on an ollama finder: the direct client reports no cost, so there is no
+  # --max-budget-usd to give it.
   [ "$HAS_OLLAMA_FINDER" -eq 0 ] || [ -n "$TIMEOUT_BIN" ] \
     || warn "no timeout/gtimeout on PATH -- ollama slices run uncapped"
   warn "ollama: the diff, claims and source it reads leave this machine for ollama.com"
@@ -437,43 +433,19 @@ slice_ok() {
     "$1" >/dev/null 2>&1
 }
 
-# Pulls the findings object out of the model's raw reply. Reads stdin, writes the object
-# on stdout and nothing else; writes nothing at all when there is no such object.
-#
-# Only the ollama transport needs this: with no Write tool the model cannot produce $out
-# itself, so the object comes back as prose-adjacent text inside the result envelope.
-select_findings_json() {
-  # Scan every position a JSON object could start at and keep the LAST one that decodes
-  # cleanly AND carries a findings key. Last, not first: a model that quotes the schema
-  # back at itself mid-reasoning emits a decoy before the real answer. Requiring the key
-  # rejects the envelope-shaped noise; requiring a clean decode rejects a fence.
-  python3 -c '
-import json,sys
-s=sys.stdin.read(); d=json.JSONDecoder(); best=None; i=0
-while True:
-    i=s.find("{",i)
-    if i<0: break
-    try: o,_=d.raw_decode(s,i)
-    except ValueError: i+=1; continue
-    if isinstance(o,dict) and "findings" in o: best=o
-    i+=1
-if best is not None: sys.stdout.write(json.dumps(best))
-' 2>/dev/null
-}
-
 # Turns an ollama result envelope into $out, or leaves $out absent. Absent is the right
 # outcome for a reply we could not parse: slice_ok then fails the slice loudly and its
 # files are reported as unreviewed. A guessed or half-written object would instead cache
 # as a clean pass -- the one stage-1 failure this pipeline cannot detect in itself.
+#
+# Only the ollama transport needs this: with no Write tool the model cannot produce $out
+# itself. lib/ollama_messages.py already picked the findings object out of the reply (the
+# last one carrying a findings list), so a result that is that object, as JSON, is taken
+# as it stands; anything else is no result.
 extract_findings() {
-  env_json="$1"; dest="$2"
-  raw="$(jq -L "$HERE" -r "$LAST_EVENT"' | .result // empty' "$env_json" 2>/dev/null)" || return 0
-  [ -n "$raw" ] || return 0
-  cand="$(printf '%s' "$raw" | select_findings_json)" || return 0
-  [ -n "$cand" ] || return 0
-  printf '%s' "$cand" \
-    | jq -e '. as $o | ($o.findings|type=="array") and ($o.read|type=="array") | $o' \
-    > "$dest" 2>/dev/null || rm -f "$dest"
+  jq -L "$HERE" -e "$LAST_EVENT"' | .result | strings | fromjson?
+      | select(type == "object" and (.findings | type == "array") and (.read | type == "array"))' \
+    "$1" > "$2" 2>/dev/null || rm -f "$2"
 }
 
 # Runs one slice for the finder last passed to load_finder. Never fatal: a slice that fails
@@ -516,14 +488,10 @@ review_slice() {
       ) > "$WORK/chunks/$key.json" 2>"$WORK/chunks/$key.err" || true
       ;;
     ollama)
-      # No Write, so no --add-dir: this model never touches $WORK. --setting-sources ""
-      # keeps CLAUDE.md and every local skill out of a prompt bound for a third party.
-      ( cd "$TREE" && MODEL="$F_MODEL" ollama_env \
-          ${TIMEOUT_BIN:+"$TIMEOUT_BIN" "$S1_TIMEOUT"} \
-          claude -p "$(cat "$WORK/chunks/$key.prompt")" \
-          --model "$F_MODEL" --output-format json \
-          --strict-mcp-config --setting-sources "" \
-          --disallowedTools Bash Edit NotebookEdit Task WebSearch WebFetch \
+      # Direct call to ollama.com messages API via ollama_messages.py (zero dependency on claude binary / Anthropic quota)
+      ( ollama_api_env python3 "$HERE/../../lib/ollama_messages.py" \
+          --endpoint "$OLLAMA_ORIGIN/v1/messages" --model "$F_MODEL" \
+          --prompt-file "$WORK/chunks/$key.prompt" --cwd "$TREE" \
       ) > "$WORK/chunks/$key.json" 2>"$WORK/chunks/$key.err" || true
       extract_findings "$WORK/chunks/$key.json" "$out"
       ;;
@@ -623,7 +591,8 @@ else
       if [ -f "$WORK/quota" ]; then
         for t in $running; do kill_tree "${t#*:}"; done
         wait 2>/dev/null
-        die "stage 1: $(head -n 1 "$WORK/quota") -- stopped; finished slices are cached, rerun after the reset"
+        warn "stage 1: $(head -n 1 "$WORK/quota") -- deferred; finished slices are cached, rerun after the reset"
+        exit 75
       fi
       if [ "$gate" -eq 0 ] && all_done $(slice_keys $KEYS); then
         gate=1

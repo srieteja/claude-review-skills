@@ -97,6 +97,12 @@ limit_hit() {
   LIMIT_RESET="$(jq -L "$HERE" -r 'include "last-event"; quota_reset // empty' "$WORK/claude.json" 2>/dev/null)" || LIMIT_RESET=""
   [ -n "$LIMIT_RESET" ] && LIMIT_RESET=$((LIMIT_RESET + 60)) || LIMIT_RESET=$(( $(date +%s) + DEFER_FALLBACK ))
 }
+# auth_refused -- whether the implementer that just ran was refused as signed out or unauthorised
+# (401/403). Not a limit: nothing lifts it, so it never defers the run. Sets AUTH_WHY.
+auth_refused() {
+  AUTH_WHY="$(jq -L "$HERE" -r 'include "last-event"; auth_hit' "$WORK/claude.json" 2>/dev/null)" || return 1
+  [ -n "$AUTH_WHY" ]
+}
 # fmt_epoch <epoch> -- GNU date first, BSD (macOS) as the fallback
 fmt_epoch() { date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$1" '+%Y-%m-%d %H:%M'; }
 lower()  { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
@@ -245,6 +251,21 @@ fi
 
 # Checked before claude is paid for: the gate is the only thing between its patch and a push.
 command -v dart >/dev/null || die "dart is not on PATH -- the test gate can't run"
+command -v flutter >/dev/null \
+  || die "flutter is not on PATH -- at_client_sdk needs the Flutter SDK, so the test gate can't run (install to ~/dev/flutter or set PATH)"
+
+# pub_get -- `dart pub get` cannot resolve Flutter packages; use `flutter pub get` when present.
+pub_get() { flutter pub get; }
+
+# run_tests -- `dart test` on the standalone VM has no dart:ui, so a Flutter package (one that
+# depends on `sdk: flutter`) fails to even load its tests; those need `flutter test`.
+run_tests() {
+  if grep -qE '^[[:space:]]+sdk:[[:space:]]*flutter[[:space:]]*$' pubspec.yaml; then
+    flutter test --concurrency=1
+  else
+    dart test --concurrency=1
+  fi
+}
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/autofix-${PR}.XXXXXX")"
 IMPL="$WORK/impl"; TREE="$WORK/tree"; BASE="$WORK/base"
@@ -256,7 +277,7 @@ trap 'rm -rf "$IMPL"; for t in "$TREE" "$BASE"; do git -C "$ROOT" worktree remov
 # severity|code|file|message.
 analyze_keys() {
   local rc=0 out
-  ( cd "$1/$2" && dart pub get ) >&2 || return 1
+  ( cd "$1/$2" && pub_get ) >&2 || return 1
   out="$(cd "$1/$2" && dart analyze --fatal-infos --format=machine)" || rc=$?
   [ "$rc" -le 3 ] || return 1   # 1-3: infos, warnings or errors found; above that, no analysis
   # Paths come back absolute, normalized or symlink-resolved: strip the tree either way.
@@ -341,7 +362,7 @@ lint_prepass() {
     echo "You are running unattended: no one will answer a question or approve a plan, so"
     echo "make the edits now. \`dart fix\` has already run here; clear each \`dart analyze\` issue"
     echo "below that it couldn't, without changing behaviour. Stay inside this directory, leave"
-    echo ".github/ alone, and run \`dart analyze\` and \`dart test --concurrency=1\` in each package you touch."
+    echo ".github/ alone, and run \`dart analyze\` and the tests (\`flutter test --concurrency=1\` in a Flutter package, else \`dart test --concurrency=1\`) in each package you touch."
     task_rules
     echo
     awk -F'|' '{ print "- " $3 ": " $2 " -- " $4 }' "$WORK/lint.left"
@@ -375,7 +396,7 @@ else
       echo "review. Each was traced to a real defect and independently verified against this"
       echo "exact source -- do not re-litigate whether it's a bug, only how to fix it correctly"
       echo "and minimally. Stay inside this directory, leave .github/ alone, add or update a"
-      echo "test where one would have caught it, and run \`dart test --concurrency=1\` in each package you touch."
+      echo "test where one would have caught it, and run the tests (\`flutter test --concurrency=1\` in a Flutter package, else \`dart test --concurrency=1\`) in each package you touch."
       task_rules
       # The safety net for a mis-routed finding: one that lives only in the PR isn't here, and
       # an empty patch drops it rather than shipping a guess.
@@ -398,7 +419,7 @@ else
     # An implementer the account refuses is skipped, not failed: the next one gets the same task
     # on a fresh tree. Only when every one is limited or unavailable is the run deferred (75),
     # to the earliest reset. Any other failure is the PR's and exits 1 as before.
-    IMPLEMENTER=""; DEFER_AT=""; DEFER_WHY=""
+    IMPLEMENTER=""; DEFER_AT=""; DEFER_WHY=""; AUTH_FAIL=""
     for impl in $IMPLEMENTERS; do
       case "$impl" in
         claude) wrap=""; m="$MODEL" ;;
@@ -420,23 +441,30 @@ else
              --model "$m" --effort "$EFFORT" --output-format json \
              --strict-mcp-config --setting-sources "" --permission-mode acceptEdits \
              ${BUDGET:+--max-budget-usd "$BUDGET"} \
-             --allowedTools Read Edit Write Glob Grep "Bash(dart test:*)" "Bash(dart pub get:*)" "Bash(dart analyze:*)" \
+             --allowedTools Read Edit Write Glob Grep "Bash(dart test:*)" "Bash(flutter test:*)" "Bash(dart pub get:*)" "Bash(flutter pub get:*)" "Bash(dart analyze:*)" \
          ) > "$WORK/claude.json" 2>"$WORK/claude.err"; then
         # Exit 0 is not success: a run cut off by its budget or turn limit still exits 0, with
         # half an edit on disk that may well apply and pass.
         if jq -L "$HERE" -e "$LAST_EVENT"' | select(.is_error != true)' "$WORK/claude.json" >/dev/null 2>&1; then ok=1
-        elif ! limit_hit; then
+        elif ! limit_hit && ! auth_refused; then
           warn "implementer ended in error ($(jq -L "$HERE" -r "$LAST_EVENT"' | .subtype // "unknown"' "$WORK/claude.json" 2>/dev/null)) -- no PR (see $WORK/claude.json)"; exit 1
         fi
-      elif ! limit_hit; then
+      elif ! limit_hit && ! auth_refused; then
         warn "implementer exited non-zero -- no PR (see $WORK/claude.err)"; exit 1
       fi
       if [ "$ok" = 1 ]; then IMPLEMENTER="$m"; [ "$impl" = claude ] || IMPLEMENTER="$impl:$m"; break; fi
-      warn "implementer $impl hit a rate limit ($LIMIT_WHY)"
-      if [ -z "$DEFER_AT" ] || [ "$LIMIT_RESET" -lt "$DEFER_AT" ]; then DEFER_AT="$LIMIT_RESET"; fi
-      DEFER_WHY="$impl: $LIMIT_WHY"
+      if [ -n "${LIMIT_WHY:-}" ]; then
+        warn "implementer $impl hit a rate limit ($LIMIT_WHY)"
+        if [ -z "$DEFER_AT" ] || [ "$LIMIT_RESET" -lt "$DEFER_AT" ]; then DEFER_AT="$LIMIT_RESET"; fi
+        DEFER_WHY="$impl: $LIMIT_WHY"
+      else
+        warn "implementer $impl is not signed in / not authorised ($AUTH_WHY)"
+        AUTH_FAIL="$impl: $AUTH_WHY"
+        DEFER_WHY="$AUTH_FAIL"
+      fi
     done
     if [ -z "$IMPLEMENTER" ]; then
+      [ -z "$AUTH_FAIL" ] || [ -n "$DEFER_AT" ] || die "implementer not signed in / not authorised ($AUTH_FAIL) -- sign in and rerun; no PR"
       [ -n "$DEFER_AT" ] || { warn "no implementer available in AUTOFIX_IMPLEMENTERS=\"$IMPLEMENTERS\" -- no PR"; exit 1; }
       warn "every available implementer is rate-limited -- deferring until $(fmt_epoch "$DEFER_AT")"
       status deferred; echo "RESUME_AT=$DEFER_AT"
@@ -505,7 +533,7 @@ while IFS= read -r pkg; do
     say "testing $pkg"
     # --concurrency=1: test files that share on-disk state race when run in parallel, and a
     # flaky gate would refuse a correct fix. Slower, never wrong.
-    ( cd "$TREE/$pkg" && dart pub get && dart test --concurrency=1 ) </dev/null >"$LOG" 2>&1 \
+    ( cd "$TREE/$pkg" && pub_get && run_tests ) </dev/null >"$LOG" 2>&1 \
       || { warn "dart test failed in $pkg -- no PR (see $LOG)"; exit 1; }
   fi
 done < <(printf '%s' "$PACKAGES" | LC_ALL=C sort -u)
@@ -522,8 +550,10 @@ if [ "$LANE" = lint ]; then
   done < <(lint_packages "$TREE")
 fi
 
-# The PR's public text: one line of context, then one bullet per finding -- where, and what
-# breaks, in a sentence. No walls of text: the diff shows the fix, the review keeps the why.
+# The PR's public text is neutral: the opening line says this is a follow-up to a review, then
+# one bullet per finding -- where, and what breaks, in a sentence (the frozen body is the draft
+# the owner edits before ship). Titles and commit subjects never name a finding. The SHA the
+# review pinned is provenance, kept in the commit message. No walls of text: the diff shows the fix.
 # The trunk lane names who last touched each cited line -- a login in backticks, so the
 # code's owner is visible without being paged. Blamed at the reviewed SHA, where the cited
 # line numbers hold.
@@ -552,11 +582,11 @@ else
         "$LINT_LEVEL" "$BASE_BRANCH" "${BASE_SHA:0:12}" "$PR"
       cat "$WORK/lint.summary"
     elif [ "$LANE" = stacked ]; then
-      printf 'Fixes what review of #%s confirmed at `%s`:\n' "$PR" "${SHA:0:12}"
+      printf 'Follow-ups from review:\n'
     elif [ "$STATE" = MERGED ]; then
-      printf 'Fixes what review of #%s confirmed at `%s`, on `%s` since #%s merged:\n' "$PR" "${SHA:0:12}" "$BASE_BRANCH" "$PR"
+      printf 'Follow-ups on `%s` from the review of #%s, which has merged:\n' "$BASE_BRANCH" "$PR"
     else
-      printf 'Fixes what review of #%s at `%s` found already on `%s`:\n' "$PR" "${SHA:0:12}" "$BASE_BRANCH"
+      printf 'Follow-ups on `%s` from the review of #%s (they predate it):\n' "$BASE_BRANCH" "$PR"
     fi
     if [ "$LANE" != lint ]; then
       # Shared with peer-review.sh's change request; confirmed.jq says why the @s are quieted.
@@ -565,10 +595,11 @@ else
     fi
     [ -z "$ANALYZED" ] || printf '\n%s: `dart analyze` only here; CI runs its tests.\n' "$ANALYZED"
   } > "$BODY"
+  # The title is public text: it never names a finding or defect, only that this is the review's follow-up.
   case "$LANE" in
     stacked) TITLE="fix: review findings from #$PR" ;;
-    trunk)   TITLE="fix: defects on $BASE_BRANCH found reviewing #$PR" ;;
-    lint)    TITLE="chore: dart analyze issues on $BASE_BRANCH in packages #$PR touches" ;;
+    trunk)   TITLE="fix: review findings on $BASE_BRANCH from #$PR" ;;
+    lint)    TITLE="chore: clear dart analyze issues on $BASE_BRANCH" ;;
   esac
   # Off the PR's branch, someone owns the code: who last touched it if asked and found, else
   # the PR's author -- never no one.
@@ -596,7 +627,7 @@ fi
 # what a human edits before ship, and nothing else from the review goes into history.
 git -C "$TREE" -c user.name="$(git -C "$ROOT" config user.name)" \
                -c user.email="$(git -C "$ROOT" config user.email)" \
-  commit -q -m "$TITLE" -m "Reviewed at ${SHA:0:12}; the PR description carries each finding."
+  commit -q -m "$TITLE" -m "Reviewed at ${SHA:0:12}; the PR description has the details."
 
 # Never forced. A fix branch already on origin is resumed only when it is this fix exactly --
 # one commit on $BASE_SHA with this tree, as a run whose `pr create` failed leaves it. Anything

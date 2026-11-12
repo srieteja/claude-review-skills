@@ -63,6 +63,11 @@ cat > "$SB/bin/dart" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$STUB_LOG/dart"
 STUB
+cat > "$SB/bin/flutter" <<'STUB'
+#!/usr/bin/env bash
+echo "flutter $*" >> "$STUB_LOG/dart"
+if [ "$1 $2" = "pub get" ]; then : > pubspec.lock; mkdir -p .dart_tool; fi
+STUB
 chmod +x "$SB/bin/"*
 # PEER_REVIEW_AUTOFIX is deliberately left unset: the wrapper's own default path is under test.
 export PATH="$SB/bin:$PATH" PEER_REVIEW_INTENSE="$SB/bin/intense-review.sh" PEER_REVIEW_ENGINE=intense \

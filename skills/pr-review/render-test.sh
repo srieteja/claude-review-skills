@@ -186,4 +186,34 @@ check "2387: one comment for the pair"            is "$(jq '.comments | length' 
 check "a line inside a hunk is anchored exactly there" \
   jq -e '.comments[] | select(.marker == "`lib/a.dart:8`") | .line == 8' "$T/rc.json"
 
+# gh without --slurp (2.45): the pages arrive concatenated, and the same payload is built.
+printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$STUB_LOG"' \
+  'case "$*" in *--slurp*) echo "unknown flag: --slurp" >&2; exit 1 ;; *"/pulls/"*"/files"*) cat "$STUB_FILES" ;; *) exit 1 ;; esac' > "$T/bin/gh"
+printf '%s%s' '[{"filename":"lib/a.dart","patch":"@@ -1,3 +1,10 @@\n+x"}]' '[{"filename":"lib/b.dart","patch":"@@ -1,2 +1,5 @@\n+y"},{"filename":"packages/at_onboarding_cli/lib/src/cli/auth_cli.dart","patch":"@@ -1070,5 +1070,20 @@\n+z"}]' > "$T/files-flat.json"
+: > "$T/gh-fb.log"
+STUB_LOG="$T/gh-fb.log" STUB_FILES="$T/files-flat.json" PATH="$T/bin:$PATH" \
+  "$PY" "$HERE/inline.py" --merged "$FX/merged-synthetic.json" --meta "$T/meta.json" --event REQUEST_CHANGES --out "$T/fb.json" 2>/dev/null || true
+check "gh without --slurp: the fallback ran"      grep -qF -- "--paginate" "$T/gh-fb.log"
+check "  after --slurp was tried"                 grep -qF -- "--slurp" "$T/gh-fb.log"
+check "  and the payload is the --slurp one"      is "$(jq -S . "$T/fb.json")" "$(jq -S . "$T/rc.json")"
+# A page that is not a list is a shaped error, not a TypeError traceback.
+printf '%s' '{"message":"Bad credentials"}' > "$T/files-bad.json"
+bad="$(STUB_LOG="$T/gh-fb.log" STUB_FILES="$T/files-bad.json" PATH="$T/bin:$PATH" \
+  "$PY" "$HERE/inline.py" --merged "$FX/merged-synthetic.json" --meta "$T/meta.json" 2>&1 >/dev/null)" || true
+check "a non-list page is refused, not a traceback" sh -c "! printf '%s' '$bad' | grep -q Traceback"
+check "  and the message says what came back"      sh -c "printf '%s' '$bad' | grep -qi 'list'"
+printf '%s' '{"message":"Not Found"}' > "$T/files-bad.json"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$STUB_LOG"' 'case "$*" in *"/pulls/"*"/files"*) cat "$STUB_FILES" ;; *) exit 1 ;; esac' > "$T/bin/gh"
+bad="$(STUB_LOG="$T/gh-fb.log" STUB_FILES="$T/files-bad.json" PATH="$T/bin:$PATH" \
+  "$PY" "$HERE/inline.py" --merged "$FX/merged-synthetic.json" --meta "$T/meta.json" 2>&1 >/dev/null)" || true
+check "a non-list --slurp result is refused too"   sh -c "! printf '%s' '$bad' | grep -q Traceback"
+check "  with the same kind of message"            sh -c "printf '%s' '$bad' | grep -qi 'list'"
+
+# gh failing on both the --slurp call and the fallback is a shaped error naming gh, not a traceback.
+printf '%s\n' '#!/usr/bin/env bash' 'echo "gh: HTTP 502 upstream" >&2; exit 1' > "$T/bin/gh"
+rc=0; bad="$(PATH="$T/bin:$PATH" "$PY" "$HERE/inline.py" --merged "$FX/merged-synthetic.json" --meta "$T/meta.json" 2>&1 >/dev/null)" || rc=$?
+check "a failing gh exits non-zero"                test "$rc" -ne 0
+check "  without a traceback"                      sh -c "! printf '%s' '$bad' | grep -q Traceback"
+check "  and the message names gh"                 sh -c "printf '%s' '$bad' | grep -q 'inline.py: gh api'"
+
 [ "$fail" = 0 ] && echo "all passed" || { echo "FAILURES"; exit 1; }

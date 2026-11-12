@@ -58,6 +58,16 @@ out="${STUB_CLAUDE_OUT:-}"; [ -z "${ANTHROPIC_BASE_URL:-}" ] || out="${STUB_OLLA
 printf '{"type":"result","subtype":"%s","is_error":%s,"result":"done"}\n' \
   "${STUB_SUBTYPE:-success}" "${STUB_IS_ERROR:-false}"
 STUB
+# flutter: `pub get` leaves what dart's does; `test` is logged apart from dart's, so a case can
+# tell which runner gated a package. STUB_DART_RC fails either runner.
+cat > "$SB/bin/flutter" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$STUB_LOG/flutter"
+if [ "$1 $2" = "pub get" ]; then : > pubspec.lock; mkdir -p .dart_tool; fi
+if [ "$1" = test ]; then pwd >> "$STUB_LOG/flutter.cwd"; exit "${STUB_DART_RC:-0}"; fi
+exit 0
+STUB
+chmod +x "$SB/bin/flutter"
 cat > "$SB/bin/dart" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$STUB_LOG/dart"
@@ -118,6 +128,9 @@ setup() {
                                printf 'void main() {}\n' > "$C/repo/pkg2/test/a_test.dart" ;; esac
   case " $* " in *" live "*) mkdir -p "$C/repo/tests/live/test"; printf 'name: live\n' > "$C/repo/tests/live/pubspec.yaml"
                              printf 'void main() {}\n' > "$C/repo/tests/live/test/a_test.dart" ;; esac
+  case " $* " in *" flutterpkg "*) mkdir -p "$C/repo/fpkg/lib" "$C/repo/fpkg/test"
+                             printf 'name: fpkg\ndependencies:\n  flutter:\n    sdk: flutter\ndev_dependencies:\n  flutter_test:\n    sdk: flutter\n' > "$C/repo/fpkg/pubspec.yaml"
+                             printf 'void main() {}\n' > "$C/repo/fpkg/test/a_test.dart"; printf 'old\n' > "$C/repo/fpkg/lib/a.dart" ;; esac
   case " $* " in *" ci "*) mkdir -p "$C/repo/.github/workflows"; printf 'on: push\n' > "$C/repo/.github/workflows/ci.yaml" ;; esac
   printf 'old\n' > "$C/repo/pkg/lib/a.dart"
   git -C "$C/repo" add -A; git -C "$C/repo" commit -qm init
@@ -193,6 +206,7 @@ calls()   { if [ -f "$C/log/$1" ]; then wc -l < "$C/log/$1" | tr -d ' '; else ec
 pushed()  { git --git-dir="$C/remotes/acme/widgets.git" rev-parse -q --verify refs/heads/$FB; }
 unpushed() { ! pushed; }
 no_headings() { ! grep -q '^#' "$C/log/body"; }
+body_leads_with() { [ "$(head -n 1 "$C/log/body")" = "$1" ]; }
 pushed_file_is() { [ "$(git --git-dir="$C/remotes/acme/widgets.git" show $FB:pkg/lib/a.dart)" = "$1" ]; }
 pushed_has()   { git --git-dir="$C/remotes/acme/widgets.git" cat-file -e "$FB:$1"; }
 remote_tip()   { git --git-dir="$C/remotes/acme/widgets.git" rev-parse $FB; }
@@ -227,10 +241,14 @@ check "body is one bullet per finding"          logged body "- \`pkg/lib/a.dart:
 check "  carrying only the claim's first sentence" never body "A second reset()"
 check "  and leaving the mechanism to the review"  never body "reset() returns before clearing the cache"
 check "body omits the UNVERIFIABLE finding"    never body "Possibly racy"
+check "body leads with what the fix does"       body_leads_with "Follow-ups from review:"
+check "  not what review prompted it"           never body "what review of"
 check "body has no headings"                   no_headings
 check "body has no Claude Code footer"         never body "Generated with"
-check "commit subject is the PR title"         subject_is "fix: review findings from #7"
-check "commit carries no finding text"         commit_lacks "Old value leaks"
+check "commit subject is neutral"                 subject_is "fix: review findings from #7"
+check "  and names no finding"                   never title "Old value"
+check "commit carries no finding detail"        commit_lacks "A second reset()"
+check "  nor the mechanism"                     commit_lacks "reset() returns before clearing the cache"
 check "commit has no AI co-author"             commit_lacks co-authored
 check "commits only the patch, not pub get's lockfile" pushed_lacks pkg/pubspec.lock
 check "  nor .dart_tool/"                       pushed_lacks pkg/.dart_tool/cache
@@ -246,10 +264,17 @@ check "accepts edits, unattended"              [ "$(arg --permission-mode)" = ac
 check "  keeps your settings and MCP out"      has_arg --strict-mcp-config
 check "  may run dart test"                    has_arg "Bash(dart test:*)"
 check "  and pub get"                          has_arg "Bash(dart pub get:*)"
+check "  flutter test, for a Flutter package"  has_arg "Bash(flutter test:*)"
+check "  and flutter pub get"                  has_arg "Bash(flutter pub get:*)"
 check "  but not all of dart"                  sh -c "! grep -qxF 'Bash(dart:*)' '$C/log/claude.args'"
 check "  in a clone with no remote to push to" [ ! -s "$C/log/claude.remotes" ]
 check "  but no other shell"                   sh -c "! grep -qxE 'Bash|Bash\\((git|\\*).*' '$C/log/claude.args'"
 check "prompt says it runs unattended"         logged task.md "unattended"
+
+setup; jq '. + [.[0] | .id = "anthropic.c02-F1" | .claim = "Stale cache on boot."]' \
+  "$C/out/merged.json" > "$C/m" && mv "$C/m" "$C/out/merged.json"; run
+check "several findings: the title is the same neutral one"  subject_is "fix: review findings from #7"
+check "  and the body lists the second"          logged body "Stale cache on boot."
 
 setup; export AUTOFIX_MODEL=claude-sonnet-5-5 AUTOFIX_EFFORT=medium AUTOFIX_BUDGET=4; run
 check "AUTOFIX_MODEL picks the model"          [ "$(arg --model)" = claude-sonnet-5-5 ]
@@ -319,6 +344,27 @@ setup; export STUB_CLAUDE_OUT='[{"type":"result","subtype":"success","is_error":
 check "an error that is not a limit still exits 1" rc_is 1
 check "  and does not defer"                   sh -c "! grep -q '^STATUS=deferred' '$C/stdout'"
 
+# A signed-out or unauthorised implementer is not a limit: it never defers the run.
+AUTH401='{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"Invalid API key"}'
+AUTH403='{"type":"result","subtype":"success","is_error":true,"api_error_status":403,"result":"Forbidden"}'
+setup; export STUB_CLAUDE_OUT="[$AUTH401]"; run
+check "the only implementer is not signed in (401): exits 1, not 75" rc_is 1
+check "  does not defer"                       sh -c "! grep -q '^STATUS=deferred' '$C/stdout' && ! grep -q '^RESUME_AT=' '$C/stdout'"
+check "  says it is not signed in"             grep -qi "not signed in" "$C/stderr"
+setup; export STUB_CLAUDE_OUT="[$AUTH403]"; run
+check "  a 403 fails the same way"             rc_is 1
+AUTH402='{"type":"result","subtype":"success","is_error":true,"api_error_status":402,"result":"Payment required"}'
+setup; export STUB_CLAUDE_OUT="[$AUTH402]"; run
+check "  a 402 (unpaid) fails the same way, never 75" rc_is 1
+setup; export STUB_CLAUDE_OUT="[$AUTH401]" OLLAMA_API_KEY=k-oll; run
+check "claude signed out, ollama key set: ollama implements, exits 0" rc_is 0
+check "  claude ran first, then ollama"        sh -c "[ \$(wc -l < '$C/log/claude') = 2 ] && [ -s '$C/log/ollama' ]"
+setup; export STUB_CLAUDE_OUT="[$AUTH401]" STUB_OLLAMA_OUT="[$AUTH403]" OLLAMA_API_KEY=k-oll; run
+check "every implementer refused as unauthorised: exits 1, never 75" rc_is 1
+check "  no deferral"                          sh -c "! grep -q '^STATUS=deferred' '$C/stdout'"
+setup; export STUB_CLAUDE_OUT="[$AUTH401]" STUB_OLLAMA_OUT="[$LIMIT_RESULT]" OLLAMA_API_KEY=k-oll; run
+check "one signed out, one limited: defers for the limited one" rc_is 75
+
 setup; export STUB_NOOP=1; run
 check "claude changes nothing: exits 1"        rc_is 1
 check "  says it made no change"               grep -qi "no change" "$C/stderr"
@@ -329,7 +375,7 @@ check "claude commits its work: still the patch" said "STATUS=opened:$URL"
 check "  carrying the fix"                     pushed_file_is new
 check "  and its refs never reach your clone"  refs_untouched
 
-setup; SAVED_PATH="$PATH"; mkdir -p "$SB/noclaude"; for b in gh dart; do ln -sf "$SB/bin/$b" "$SB/noclaude/$b"; done
+setup; SAVED_PATH="$PATH"; mkdir -p "$SB/noclaude"; for b in gh dart flutter; do ln -sf "$SB/bin/$b" "$SB/noclaude/$b"; done
 PATH="$SB/noclaude:/usr/bin:/bin"; run; PATH="$SAVED_PATH"
 check "no claude on PATH: refused"             rc_is 1
 check "  says why"                             grep -qi claude "$C/stderr"
@@ -470,6 +516,20 @@ check "  never pushes"                         unpushed
 
 setup twopkg; patch pkg2/lib/b.dart; export STUB_DART_STDIN=1; run
 check "a test that reads stdin: every package still gated" [ "$(grep -c '^test' "$C/log/dart")" = 2 ]
+
+echo "Flutter packages"
+setup flutterpkg; patch fpkg/lib/b.dart; run
+check "a Flutter package: opened"              said "STATUS=opened:$URL"
+check "  gated with flutter test"              logged flutter "test --concurrency=1"
+check "  never with dart test"                 sh -c "! grep -q 'fpkg\$' '$C/log/dart.cwd'"
+check "  in the Flutter package"               grep -q 'fpkg$' "$C/log/flutter.cwd"
+setup flutterpkg; patch fpkg/lib/b.dart; export STUB_DART_RC=1; run
+check "a failing flutter test: no PR"          never gh "pr create"
+check "  refused"                              rc_is 1
+unset STUB_DART_RC
+setup; run
+check "a plain Dart package: still dart test"  logged dart test
+check "  never flutter test"                   never flutter test
 
 echo "live-rig packs"
 setup live; patch --no-fix tests/live/test/b_test.dart; run
@@ -644,7 +704,10 @@ check "  committed on trunk's tip"             [ "$(git --git-dir="$C/remotes/ac
 check "  carries trunk's own changes"          pushed_has pkg/lib/b.dart
 check "  opened against trunk"                 logged gh "--base main --head $FB"
 check "  asks the PR's author"                 said "REVIEWER=requested:alice"
-check "  says it predates the PR"              logged body 'already on `main`'
+check "  says it predates the PR"              logged body 'they predate it'
+check "  title is neutral"             subject_is "fix: review findings on main from #7"
+check "  and names no finding"                 never title "Old value"
+check "  leads with what the fix does"         body_leads_with 'Follow-ups on `main` from the review of #7 (they predate it):'
 check "  names who last touched the line"      logged body '`pkg/lib/a.dart:1` by `bob`'
 check "  without paging them"                  never body "@bob"
 check "  never touches the stacked branch"     sh -c "! git --git-dir='$C/remotes/acme/widgets.git' rev-parse -q --verify fix/pr7-review-findings-${SHA:0:12}"
@@ -665,7 +728,8 @@ check "  so does the body"                     never body "Stale cache"
 
 setup; trunk_ahead; export AUTOFIX_LANE=trunk STUB_PRVIEW="$(prview false "$SHA" MERGED)"; run
 check "MERGED: every finding goes to trunk"    said "STATUS=opened:$URL"
-check "  says the PR merged"                   logged body "since #7 merged"
+check "  says the PR merged"                   logged body "which has merged"
+check "  leads with what the fix does"         body_leads_with 'Follow-ups on `main` from the review of #7, which has merged:'
 check "  the finding is in the body"           logged body "Old value leaks past the reset."
 
 setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN" STUB_NOOP=1; run
@@ -721,6 +785,8 @@ check "  the info is left alone by default"    sh -c "git --git-dir='$C/remotes/
 check "  opened against trunk"                 logged gh "--base main --head $FB"
 check "  asks the PR's author"                 said "REVIEWER=requested:alice"
 check "  the body names the issue"             logged body 'fix_unused'
+check "  title says what it does"              subject_is "chore: clear dart analyze issues on main"
+check "  not which PR prompted it"             never title "#7"
 check "  and no findings"                      never body "Old value leaks"
 check "  gated by the package's tests"         logged dart test
 
