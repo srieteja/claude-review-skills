@@ -210,7 +210,7 @@ esac
 EXISTING="$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json url | jq -r '.[0].url // empty')" \
   || die "could not check for an existing fix PR on branch $BRANCH"
 if [ -z "$EXISTING" ] && [ "$LANE" = trunk ]; then
-  EXISTING="$(gh pr list --repo "$REPO" --state open --limit 1000 --json url,headRefName \
+  EXISTING="$(gh pr list --repo "$REPO" --state open --search "head:fix/pr${PR}-preexisting-" --json url,headRefName \
       | jq -r --arg p "fix/pr${PR}-preexisting-" '[.[] | select(.headRefName | startswith($p))][0].url // empty')" \
     || die "could not check for an open trunk fix PR for #$PR"
 fi

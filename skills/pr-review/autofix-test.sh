@@ -141,7 +141,7 @@ setup() {
 JSON
   printf '{"url":"https://github.com/acme/widgets/pull/7","headRefOid":"%s"}' "$SHA" > "$C/out/meta.json"
   FROZEN="$C/out/autofix"
-  export STUB_LOG="$C/log" STUB_PATCH="$C/fix.patch" STUB_REPO=acme/widgets STUB_EXISTING="" \
+  export STUB_LOG="$C/log" STUB_PATCH="$C/fix.patch" STUB_REPO=acme/widgets STUB_EXISTING="" STUB_OPEN_FIXES="" \
          STUB_ME=me STUB_BLAME=bob STUB_EDIT_RC=0 STUB_DART_RC=0 STUB_ANALYZE_RC=0 STUB_ANALYZE_OLD="" STUB_ANALYZE_NEW="" STUB_CLAUDE_RC=0 STUB_CREATE_RC=0 STUB_DART_STDIN="" \
          STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success STUB_CLAUDE_SH="" STUB_CLAUDE_OUT=""
   unset AUTOFIX_DEFER_FALLBACK AUTOFIX_LINT_LEVEL AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_LANE AUTOFIX_TRUNK_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE AUTOFIX_ANALYZE_ONLY
@@ -367,8 +367,12 @@ check "  leaving the earlier one alone"        [ "$(git --git-dir="$C/remotes/ac
 echo "trunk lane: an open fix PR for an earlier head"
 setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk STUB_OPEN_FIXES="$(openfix 50:fix/pr7-preexisting-0123456789ab)"; run
 check "open trunk fix PR for an earlier head: exists" said "STATUS=exists:https://github.com/acme/widgets/pull/50"
+check "  searches by head branch prefix"       logged gh "--search head:fix/pr7-preexisting-"
 check "  never calls claude"                   [ "$(calls claude)" = 0 ]
 check "  never pushes"                         unpushed
+
+setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk; run
+check "setup resets STUB_OPEN_FIXES: opens its own" said "STATUS=opened:$URL"
 
 setup; trunk_ahead; route pre-existing; export AUTOFIX_LANE=trunk STUB_OPEN_FIXES="$(openfix 50:fix/pr7-review-findings-0123456789ab 51:fix/pr70-preexisting-0123456789ab 52:fix/pr7-lint-0123456789ab)"; run
 check "open fix PRs of another lane or PR: opens its own" said "STATUS=opened:$URL"
