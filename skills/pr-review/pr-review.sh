@@ -27,10 +27,17 @@ S1_EFFORT="$(clamp_effort "${PR_REVIEW_S1_EFFORT:-medium}")"
 SONNET_MODEL="${PR_REVIEW_SONNET_MODEL:-claude-sonnet-5-5}"
 S1_TIMEOUT="${PR_REVIEW_S1_TIMEOUT:-25m}"
 BURDEN="${PR_REVIEW_BURDEN:-strict}"
-AGY_TIMEOUT="${PR_REVIEW_AGY_TIMEOUT:-20m}"
-REFUTE_TIMEOUT="${PR_REVIEW_REFUTE_TIMEOUT:-$AGY_TIMEOUT}"
-JOBS="${PR_REVIEW_JOBS:-4}"
-S1_JOBS="${PR_REVIEW_STAGE1_JOBS:-3}"
+# One claim is one bounded call: 8m is past the slowest healthy verdict. A call that hits it fails
+# like any other and is retried once on the same model, then the chain moves on; only a claim whose
+# every attempt failed is reported unchecked.
+# PR_REVIEW_AGY_TIMEOUT is the deprecated name of PR_REVIEW_REFUTE_TIMEOUT.
+refute_defaults; JOBS="$REFUTE_JOBS"
+S1_JOBS="${PR_REVIEW_STAGE1_JOBS:-5}"
+# A timeout of 0 means no ceiling to timeout(1), and a job count below 1 never starts a job: refuse both now.
+require_duration PR_REVIEW_S1_TIMEOUT "$S1_TIMEOUT" || exit 1
+require_duration PR_REVIEW_REFUTE_TIMEOUT "$REFUTE_TIMEOUT" || exit 1
+require_posint PR_REVIEW_JOBS "$JOBS" || exit 1
+require_posint PR_REVIEW_STAGE1_JOBS "$S1_JOBS" || exit 1
 CHUNK_BYTES="${PR_REVIEW_CHUNK_BYTES:-80000}"
 # USD per anthropic slice; `none` removes the cap and S1_TIMEOUT bounds the slice instead.
 # A runaway guard, not a budget: an 80KB opus slice measured $3.00-3.24, and a capped slice
@@ -62,6 +69,8 @@ INLINE=0; ASSUME_YES=0; KEEP=0; FINDINGS_IN=""; NO_CACHE=0; SONNET=0; NO_BRIEF=0
 PIN="${PR_REVIEW_SHA:-}"
 
 die() { printf '\033[31mpr-review: %s\033[0m\n' "$*" >&2; exit 1; }
+[ -f "$HERE/agy-quota.sh" ] || die "missing $HERE/agy-quota.sh"
+. "$HERE/agy-quota.sh"
 say() { printf '\033[36m==>\033[0m %s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 warn() { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
 
@@ -90,7 +99,8 @@ models: picked from what this machine can reach (claude, agy, OLLAMA_API_KEY), b
      PR_REVIEW_REFUTER ("agy|anthropic|ollama:model"), PR_REVIEW_GEMINI_MODEL (an agy refuter)
      PR_REVIEW_BURDEN (strict|evidence)
      PR_REVIEW_CROSS (1: refuter unavailable -> the other finder family refutes)
-     PR_REVIEW_REFUTE_TIMEOUT PR_REVIEW_S1_TIMEOUT PR_REVIEW_AGY_TIMEOUT
+     PR_REVIEW_REFUTE_TIMEOUT PR_REVIEW_S1_TIMEOUT
+     PR_REVIEW_AGY_TIMEOUT (deprecated: the old name of PR_REVIEW_REFUTE_TIMEOUT)
      PR_REVIEW_JOBS PR_REVIEW_STAGE1_JOBS PR_REVIEW_CHUNK_BYTES PR_REVIEW_BUDGET_USD (or none)
      PR_REVIEW_TEST_RE PR_REVIEW_CROSS_RE PR_REVIEW_SHA PR_REVIEW_DIR (review store, default ~/.reviews)
      PR_REVIEW_SONNET_MODEL (what --sonnet selects)
@@ -119,7 +129,7 @@ while [ $# -gt 0 ]; do
     --no-fix) NO_FIX=1 ;;
     --sha) PIN="$2"; shift ;;
     --findings) FINDINGS_IN="$2"; shift ;;
-    --jobs) JOBS="$2"; shift ;;
+    --jobs) require_posint --jobs "${2:-}" || exit 1; JOBS="$2"; shift ;;
     -h|--help) usage ;;
     -*) die "unknown option: $1" ;;
     *) [ -n "$PR" ] && die "unexpected argument: $1"; PR="$1" ;;
@@ -177,7 +187,7 @@ done
 # Glob and Grep and no Write, so the model returns its findings in its reply. See emit/README.md.
 #
 # load_finder <transport:model[@effort]> sets F_TRANSPORT F_MODEL F_EFFORT F_EMIT F_SCHEMA
-# F_LABEL F_NAME F_TAG F_PROMPT_ID F_CACHE_TAG. F_TAG prefixes slice keys and finding ids when
+# F_LABEL F_NAME F_TAG F_CACHE_TAG. F_TAG prefixes slice keys and finding ids when
 # there is more than one finder.
 load_finder() {
   case "$1" in *:?*) ;; *) die "finder must be transport:model[@effort], got: $1" ;; esac
@@ -196,10 +206,6 @@ load_finder() {
   F_LABEL="$F_MODEL${F_EFFORT:+/$F_EFFORT}"
   [ "$F_TRANSPORT" = anthropic ] && F_NAME="$F_LABEL" || F_NAME="$F_LABEL via $F_TRANSPORT"
   if [ "$NFINDERS" -gt 1 ]; then F_TAG="$F_TRANSPORT."; else F_TAG=""; fi
-  # Cache key covers the prompts: editing one must invalidate old slices.
-  F_PROMPT_ID="$(cat "$HERE/review.prompt" "$HERE/scope/"*.txt \
-                     "$HERE/emit/$F_EMIT.head.txt" "$HERE/emit/$F_EMIT.tail.txt" ${F_SCHEMA:+"$F_SCHEMA"} \
-                   | cksum | awk '{print $1}')"
   # The model is part of the key. It was not, and that was a live bug even before a second
   # transport existed: a cheaper model's slices were served back to a later run at the same
   # SHA, under a report that stamped the expensive model's name on them.
@@ -488,7 +494,15 @@ extract_findings() {
 review_slice() {
   key="$1"; scope="$2"; diff="$3"; shift 3
   out="$WORK/slices/$key.json"
-  cache="$CACHE_ROOT/${SHA}-${F_PROMPT_ID}-${F_CACHE_TAG}"
+  # The key covers the prompts this slice is built from, and only those: editing one must
+  # invalidate old slices, and editing refute.prompt or another scope's file must not.
+  pid="$(cat "$HERE/review.prompt" "$HERE/scope/$scope.txt" \
+             "$HERE/emit/$F_EMIT.head.txt" "$HERE/emit/$F_EMIT.tail.txt" ${F_SCHEMA:+"$F_SCHEMA"} \
+           | cksum | awk '{print $1}')"
+  cache="$CACHE_ROOT/${SHA}-${pid}-${F_CACHE_TAG}"
+  # A test slice's feature findings are its own transport's: that is all its gate waited for.
+  if [ "$BRIEF_OK" -eq 1 ]; then findings_ref="(none: the feature review runs alongside this one)"
+  else findings_ref="$WORK/feature-findings.$F_TRANSPORT.json"; fi
   mkdir -p "$cache"
   # Keyed on the slice's own bytes, not just its index: retuning CHUNK_BYTES or moving the
   # pin reshuffles which files land in c01, and an index-only key would serve those stale
@@ -507,7 +521,7 @@ review_slice() {
     | sed -e "/__EMIT_CLOSE__/r $HERE/emit/$F_EMIT.tail.txt"  -e "/__EMIT_CLOSE__/d" \
     | sed -e "s|__DIFF__|$diff|g" -e "s|__META__|$WORK/meta.json|g" \
           -e "s|__FILES__|$WORK/files.txt|g" -e "s|__OUT__|$out|g" \
-          -e "s|__FINDINGS__|$FINDINGS_REF|g" -e "s|__BRIEF__|$BRIEF_REF|g" \
+          -e "s|__FINDINGS__|$findings_ref|g" -e "s|__BRIEF__|$BRIEF_REF|g" \
     > "$WORK/chunks/$key.prompt"
   case "$F_TRANSPORT" in
     anthropic)
@@ -521,10 +535,12 @@ review_slice() {
       ) > "$WORK/chunks/$key.json" 2>"$WORK/chunks/$key.err" || true
       ;;
     ollama)
-      # Direct call to ollama.com messages API via ollama_messages.py (zero dependency on claude binary / Anthropic quota)
-      ( ollama_api_env python3 "$HERE/../../lib/ollama_messages.py" \
+      # Direct call to ollama.com messages API via ollama_messages.py (zero dependency on claude binary / Anthropic quota).
+      # The prompt points at files under $WORK (diff, file list, meta, brief): --allow-read makes
+      # that one directory readable, beside the clone and read-only.
+      ( ollama_api_env ${TIMEOUT_BIN:+"$TIMEOUT_BIN" "$S1_TIMEOUT"} python3 "$HERE/../../lib/ollama_messages.py" \
           --endpoint "$OLLAMA_ORIGIN/v1/messages" --model "$F_MODEL" \
-          --prompt-file "$WORK/chunks/$key.prompt" --cwd "$TREE" \
+          --prompt-file "$WORK/chunks/$key.prompt" --cwd "$TREE" --allow-read "$WORK" \
       ) > "$WORK/chunks/$key.json" 2>"$WORK/chunks/$key.err" || true
       extract_findings "$WORK/chunks/$key.json" "$out"
       ;;
@@ -541,6 +557,11 @@ review_slice() {
   jq -L "$HERE" -r 'include "last-event"; quota_hit' \
     "$WORK/chunks/$key.json" > "$WORK/chunks/$key.quota" 2>/dev/null || true
   [ ! -s "$WORK/chunks/$key.quota" ] || mv "$WORK/chunks/$key.quota" "$WORK/quota"
+  # agy reports a spent model on stderr only, with no is_error in the envelope.
+  if [ "$F_TRANSPORT" = agy ] && [ ! -s "$WORK/quota" ] && agy_quota_hit "$WORK/chunks/$key.err"; then
+    echo "agy $F_MODEL: RESOURCE_EXHAUSTED, $(grep -m1 '^AGY_ERROR:' "$WORK/chunks/$key.err" \
+      | sed 's/^AGY_ERROR: *//' | jq -r '.short_error // empty' 2>/dev/null)" > "$WORK/quota"
+  fi
   if slice_ok "$out" "$diff"; then
     cp "$out" "$hit"
     printf '    %-7s %s finding(s)\n' "$key" "$(jq '.findings|length' "$out")" >&2
@@ -606,18 +627,31 @@ else
     say "         $NTEST test file(s) in $(count $TKEYS) test slice(s), after the feature slices with their findings as context"
   fi
 
-  # Every finder-tagged key for the given slices.
-  slice_keys() { for k; do for f in $FINDERS; do load_finder "$f"; echo "$F_TAG$k"; done; done; }
+  # Every finder-tagged key for the given slices; with a leading -t <transport>, only that
+  # transport's finders.
+  slice_keys() {
+    local only=""; [ "$1" != -t ] || { only="$2"; shift 2; }
+    for k; do for f in $FINDERS; do
+      load_finder "$f"; [ -z "$only" ] || [ "$F_TRANSPORT" = "$only" ] || continue
+      echo "$F_TAG$k"
+    done; done
+  }
   # all_done <tagged-key...>: every one has finished, with or without findings.
   all_done() { for k; do [ -f "$WORK/done/$k" ] || return 1; done; }
-  # Runs every finder|slice item, longest first (tests, cross, features), up to S1_JOBS at a
-  # time per transport. Test slices take the brief as context; with no brief they wait for
-  # every feature slice and take its findings instead. A session-limit result from any slice
+  # Runs every finder|slice item, largest diff first, up to S1_JOBS at a time per transport.
+  # Test slices take the brief as context; with no brief a finder's test slices wait for that
+  # transport's own feature slices (a slow transport does not hold another's tests back) and
+  # take their findings instead. A session-limit result from any slice
   # stops stage 1: nothing more is launched, every running slice is killed with its children,
   # and the run dies naming the limit.
   run_stage1() {
-    local queue="" running="" gate="$BRIEF_OK" rest item f k s live still ctx t
-    for k in $TKEYS $(printf '%s\n' $ALL | grep -x _cross) $KEYS; do
+    local FINDER_TRANSPORTS="" queue="" running="" open="" rest item f k s live still ctx t tr
+    for f in $FINDERS; do
+      load_finder "$f"; case " $FINDER_TRANSPORTS " in *" $F_TRANSPORT "*) ;; *) FINDER_TRANSPORTS="$FINDER_TRANSPORTS $F_TRANSPORT" ;; esac
+    done
+    for k in $(for k in $TKEYS $(printf '%s\n' $ALL | grep -x _cross) $KEYS; do
+                 echo "$(wc -c < "$WORK/chunks/$k.diff" | tr -d ' ') $k"; done \
+               | sort -s -rn -k1,1 | awk '{print $2}'); do
       for f in $FINDERS; do queue="$queue $f|$k"; done
     done
     while [ -n "$queue$running" ]; do
@@ -629,17 +663,22 @@ else
         warn "stage 1: $(head -n 1 "$WORK/quota") -- deferred; finished slices are cached, rerun after the reset"
         exit 75
       fi
-      if [ "$gate" -eq 0 ] && all_done $(slice_keys $KEYS); then
-        gate=1
-        merge_slices $(slice_keys $KEYS) > "$WORK/feature-findings.json"
-        [ -z "$TKEYS" ] || say "stage 1: test slices, $(jq '.findings|length' "$WORK/feature-findings.json") feature finding(s) as context"
+      if [ "$BRIEF_OK" -eq 1 ]; then open="$FINDER_TRANSPORTS"; else
+        for tr in $FINDER_TRANSPORTS; do
+          case " $open " in *" $tr "*) continue ;; esac
+          all_done $(slice_keys -t "$tr" $KEYS) || continue
+          open="$open $tr"
+          merge_slices $(slice_keys -t "$tr" $KEYS) > "$WORK/feature-findings.$tr.json"
+          [ -z "$TKEYS" ] || say "stage 1: $tr test slices, $(jq '.findings|length' "$WORK/feature-findings.$tr.json") feature finding(s) as context"
+        done
       fi
       rest=""
       for item in $queue; do
         f="${item%|*}"; k="${item##*|}"
         load_finder "$f"
-        case "$k" in t[0-9]*) s=tests; [ "$gate" -eq 1 ] || { rest="$rest $item"; continue; }
-                              ctx="$TEST_CTX" ;;
+        case "$k" in t[0-9]*) s=tests
+                              case " $open " in *" $F_TRANSPORT "*) ;; *) rest="$rest $item"; continue ;; esac
+                              if [ "$BRIEF_OK" -eq 1 ]; then ctx="$BRIEF_REF"; else ctx="$WORK/feature-findings.$F_TRANSPORT.json"; fi ;;
                      _cross)  s=cross; ctx="" ;;
                      *)       s=package; ctx="" ;; esac
         if [ "$(printf '%s\n' $running | grep -c "^$F_TRANSPORT:")" -ge "$S1_JOBS" ]; then
@@ -663,7 +702,7 @@ else
       echo "$WORK/slices/$k.tagged"
     done)
     [ $# -gt 0 ] || { echo '{"findings":[]}'; return; }
-    jq -s '{findings: (map(.slice as $s | .findings[] | .id = ($s + "-" + .id)))}' "$@"
+    jq -L "$HERE" -s 'include "finding-id"; {findings: (map(.slice as $s | .findings[] | .id = ($s + "-" + (.id | safe_id))))}' "$@"
   }
 
   # Snapshot for the report-only check below: changes in $ROOT during an agy finder run.
@@ -671,11 +710,9 @@ else
 
   # Copied beside the diff, so a finder that can read its diff can read the brief.
   if [ "$BRIEF_OK" -eq 1 ]; then
-    cp "$BRIEF" "$WORK/brief.md"; BRIEF_REF="$WORK/brief.md"; TEST_CTX="$BRIEF_REF"
-    FINDINGS_REF="(none: the feature review runs alongside this one)"
+    cp "$BRIEF" "$WORK/brief.md"; BRIEF_REF="$WORK/brief.md"
   else
     BRIEF_REF="(none: no brief was written for this run)"
-    FINDINGS_REF="$WORK/feature-findings.json"; TEST_CTX="$FINDINGS_REF"
   fi
   run_stage1
 

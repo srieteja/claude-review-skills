@@ -88,7 +88,10 @@ the ollama fallback above there is no measured recall figure for it, so treat a 
 |---|---|---|
 | `PR_REVIEW_FINDERS` | the single default finder above | space-separated `transport:model[@effort]`, one per transport (`anthropic`, `ollama`, `agy`) |
 | `PR_REVIEW_REFUTER` | `agy:gemini-3.8-flash-high` | `agy:<model>` or `ollama:<model>` |
-| `PR_REVIEW_REFUTER_FALLBACK` | `gemini-3.1-pro-high claude-opus-4-6-thinking` | agy only: models tried in order when the refuter's is out of quota (429). `""` pins the refuter. Each verdict records its `.model` |
+| `PR_REVIEW_REFUTER_FALLBACK` | `claude-opus-4-6-thinking` | agy only: models tried in order when the refuter's is out of quota (429). `""` pins the refuter. Each verdict records its `.model` |
+| `PR_REVIEW_JOBS` / `PR_REVIEW_STAGE1_JOBS` | `8` validators / `5` slices per transport | stage 2 parallelism / stage 1 parallelism; positive integers, anything else is refused at start-up. Stage 1 starts the largest slice first |
+| `PR_REVIEW_REFUTE_TIMEOUT` | `8m` | one validator call; a positive `N`, `Ns`, `Nm` or `Nh` (`0` is refused: `timeout` reads it as no limit). A call that times out is retried like any failed call. Claims in the same file, within 3 lines of each other, with the same claim text and from the same finder share one verdict |
+| `PR_REVIEW_AGY_TIMEOUT` | unset | deprecated: the old name of `PR_REVIEW_REFUTE_TIMEOUT`, used when that is unset |
 | `PR_REVIEW_BURDEN` | `strict` | `strict` or `evidence` — the files under `burden/` |
 | `PR_REVIEW_BUDGET_USD` | `8.00` per anthropic slice — a runaway guard; measured slices cost ~$3 | `none` removes the cap; `PR_REVIEW_S1_TIMEOUT` becomes the only ceiling |
 
@@ -349,7 +352,7 @@ the branch moves.
 | `stage 1: no findings.json was written` | Opus answered in prose instead of writing the file. Rerun; if it repeats, `~/.claude/skills/pr-review/review.prompt` needs tightening. |
 | Everything CONFIRMED | The refutation prompt has stopped discriminating. Re-run the T1b fixture (a fabricated mechanism on a real line) before trusting any output. |
 | Everything REFUTED | Usually a tree mismatch — check the head SHA in the report matches the PR. |
-| `ERROR` verdicts | Read `$WORK/claims/<id>.err.<attempt>` in the kept work dir. Usually a validator timeout; raise `PR_REVIEW_REFUTE_TIMEOUT`. |
+| `ERROR` verdicts | Read `$WORK/claims/<id>.err.<attempt>` in the kept work dir. A validator timeout (default 8m, retried like any failure): raise `PR_REVIEW_REFUTE_TIMEOUT`, or pick a faster refuter tier (`agy:gemini-3.8-flash-medium` is the faster tier; changing the configured refuter is the owner's call). |
 | `one finder per transport` | `PR_REVIEW_FINDERS` names a transport twice. Finder ids are tagged by transport, so two finders on one transport would collide. |
 | Many `UNVERIFIABLE` | Evidence burden only. The refuter could neither confirm nor disprove — often a mechanism through a dependency or server. Read each reason; they are unchecked claims, not confirmed ones. |
 

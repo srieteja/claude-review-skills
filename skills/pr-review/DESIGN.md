@@ -72,7 +72,7 @@ flowchart LR
 |---|---|
 | **Finder framing in `review.prompt`**: role, stakes, a parallel competition, "do not self-censor" | Earlier wording told finders to drop what they could not defend, which traded recall for precision before anyone checked. Stage 2's refuter, under an evidence burden, removes false positives, so finders favour recall and the refuter owns precision. The drop-what-you-cannot-defend rule was removed; a finding still has to cite file and line in the tree. |
 | **One finder per transport**, tagged by transport (`anthropic.`, `agy.`) | The tag has to be stable, short and filesystem-safe: it prefixes slice keys, claim ids and cache dirs. The transport is all three. Two finders on one transport would need a model-derived tag, and nobody has asked for that yet, so it is refused up front instead of colliding in the cache. |
-| **Per-finder cache dir**, keyed on SHA + that finder's prompt checksum + model/effort/transport | An agy slice must never be served as an anthropic one. The checksum covers the emit files and `findings.schema.json`, so a schema edit invalidates only the finder that uses it. |
+| **Per-finder cache dir**, keyed on SHA + that finder's prompt checksum + model/effort/transport | An agy slice must never be served as an anthropic one. The checksum covers `review.prompt`, the slice's own scope file, the emit files and `findings.schema.json`, so a schema edit invalidates only the finder that uses it, and editing `refute.prompt` or the test scope leaves the feature slices cached. |
 | **Agreement is annotated, not deduplicated** (`.also`) | Deduplicating means picking one mechanism and discarding the other. Keeping both gets each one refuted independently. Two findings on the same spot, both surviving, is the strongest signal the report can carry. |
 | **Coverage gaps are per finder** | If one finder's slice failed, those files were still read by the other finder, but not by both. The banner says which finder missed which slice. |
 | **Burden is a directory** (`burden/strict`, `burden/evidence`) swapped into `refute.prompt` | Swapping text files keeps the gate honest: `strict` renders byte-identical to the pre-split prompt, so the default path is unperturbed. |
@@ -95,7 +95,7 @@ ids.
 |---|---|
 | Bin by **diff bytes**, not by package | On the PR this was built for, one package was 97% of the diff. Package boundaries do not balance. |
 | Path-sorted greedy binning | A slice stays directory-adjacent, so it reads as coherent code, with no explicit grouping logic. |
-| **Tests get their own pass, after the feature slices** | 43% of a typical diff is tests, and the feature prompt forbids test-coverage findings, so mixing them in bought noise. Excluding them outright was worse: on #2352 every code file was under `tests/`, stage 1 reviewed YAML and docs, and the report read "No findings." The test pass runs once the feature slices finish, with their findings and the brief as context, and asks whether the tests can fail, hit their target, and pin the behaviour the PR claims. Its cache key covers that context. |
+| **Tests get their own pass, after the feature slices** (no brief: after the same transport's feature slices) | 43% of a typical diff is tests, and the feature prompt forbids test-coverage findings, so mixing them in bought noise. Excluding them outright was worse: on #2352 every code file was under `tests/`, stage 1 reviewed YAML and docs, and the report read "No findings." The test pass runs once the feature slices finish, with their findings and the brief as context, and asks whether the tests can fail, hit their target, and pin the behaviour the PR claims. Its cache key covers that context. |
 | One **cross-cutting pass** over barrels and pubspecs | Slicing structurally hides cross-package breakage, which is precisely what an export-split PR risks. The slices cover depth; this pass covers the seams. |
 | Cache keyed on head SHA **+ prompt checksum** | Resumes after a rate-limit without re-paying, and editing a prompt invalidates stale slices instead of silently reusing them. |
 | A failed slice is a **gap, not a death** | The run continues and the report names the unreviewed slices. Silent partial coverage reads exactly like a clean review. |
@@ -142,11 +142,14 @@ The ollama refuter did read the pinned tree. TRUE_CLAIM is false in the live tre
 - Validator model is `gemini-3.8-flash-high`; agy also offers `-medium` and `-low`, which encode the effort in the id.
 - **agy quota is per model.** A 429 `RESOURCE_EXHAUSTED` from one model leaves the others runnable, and the reset can be days away.
   - `refute` reads only the `AGY_ERROR:` line on stderr (`agy-quota.sh`). A quota hit moves the claim to the next model in `PR_REVIEW_REFUTER_FALLBACK` instead of spending its retry. It also drops `$WORK/exhausted/<model>`, so queued claims skip that model.
-  - A claude refuter (`anthropic:` or `ollama:`) reports a spent, unpaid or signed-out account only in its result event; `quota_hit` in `last-event.jq` reads it, for refute and for stage 1 alike.
+  - A claude refuter (`anthropic:` or `ollama:`) reports a spent or unpaid account (429, 402, or the limit wording) only in its result event; `quota_hit` in `last-event.jq` reads it, for refute and for stage 1 alike. A signed-out or unauthorised account (401, 403) is `auth_hit`: stage 1 and the implementer fail with a sign-in message, never a deferral, and a refuter chain just moves on.
   - Any other failure keeps the old rule: one retry on the same model, then ERROR.
   - The fallback can change the burden calibration. A claim refuted by pro or opus wasn't judged by the flash model the burden was tuned on, so every verdict carries `.model`.
-  - The agy *finder* in `/intense-review` does **not** fall back yet. A spent finder model shows up as a coverage gap.
-- `agy --print-timeout` defaults to 5m, too short for this; the script sets 20m.
+  - The agy *finder* in `/intense-review` does **not** fall back yet. Its `AGY_ERROR` 429 on stderr defers stage 1 (exit 75) like a claude finder's session limit.
+  - A validator call is capped by `PR_REVIEW_REFUTE_TIMEOUT` (8m). A timeout is an ordinary failed call: retried like any other: two tries on the same model, then the claim is left unchecked (ERROR). The chain advances only when a link is out of quota or unavailable. `gemini-3.8-flash-medium` is the faster refuter tier; switching to it is a config decision.
+  - Duplicate claims (same file, line within 3, same claim, same finder family) are validated once and the verdict copied to the rest.
+  - Stage 1 starts the largest diff first, so the long slice does not start last; an ollama finder is wrapped in `PR_REVIEW_S1_TIMEOUT`.
+- `agy --print-timeout` defaults to 5m, too short for stage 1; the script passes `PR_REVIEW_S1_TIMEOUT` (25m) and the refuter passes `PR_REVIEW_REFUTE_TIMEOUT` (8m). `PR_REVIEW_AGY_TIMEOUT` is kept as a deprecated alias of the refuter one.
 - Targets bash 3.2 (macOS system bash): no `mapfile`, no `wait -n`, no associative arrays.
 - Posting is never automatic. The report file is always written first.
 

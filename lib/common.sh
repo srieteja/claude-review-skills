@@ -135,3 +135,35 @@ clamp_effort() {
     *) printf 'clamp_effort: effort "%s" is above medium; using medium\n' "$1" >&2; printf medium ;;
   esac
 }
+
+# require_posint <name> <value>: returns 1 with a message naming <name> unless <value> is a positive
+# integer (digits only, at most 9). <name> is the variable or flag the value came from.
+require_posint() {
+  case "$2" in
+    ''|*[!0-9]*|??????????*) ;;
+    *) [ "$((10#$2))" -gt 0 ] && return 0 ;;
+  esac
+  printf '%s must be a positive integer (got "%s")\n' "$1" "$2" >&2
+  return 1
+}
+
+# refute_defaults -- the one place the refuter's ceiling and job count get their defaults:
+# REFUTE_TIMEOUT from PR_REVIEW_REFUTE_TIMEOUT, else the deprecated PR_REVIEW_AGY_TIMEOUT, else 8m;
+# REFUTE_JOBS from PR_REVIEW_JOBS, else 8. Callers validate with require_duration / require_posint.
+refute_defaults() {
+  REFUTE_TIMEOUT="${PR_REVIEW_REFUTE_TIMEOUT:-${PR_REVIEW_AGY_TIMEOUT:-8m}}"
+  REFUTE_JOBS="${PR_REVIEW_JOBS:-8}"
+}
+
+# require_duration <name> <value>: returns 1 with a message naming <name> unless <value> is a
+# duration timeout(1) takes as a ceiling: N, Ns, Nm or Nh, N a positive integer. 0 is refused
+# because timeout reads it as no ceiling; floats, negatives and other suffixes are refused too.
+require_duration() {
+  local n="${2%[smh]}"
+  case "$n" in
+    ''|*[!0-9]*|??????????*) ;;
+    *) [ "$((10#$n))" -gt 0 ] && return 0 ;;
+  esac
+  printf '%s must be a positive duration like 90, 90s, 8m or 2h (got "%s"); 0 would mean no time limit\n' "$1" "$2" >&2
+  return 1
+}

@@ -20,7 +20,7 @@ PIN_SHA=41a4cc648b2b0cb153c76d8ed9f5b084c40d6202
 GEMINI_MODEL="${PR_REVIEW_GEMINI_MODEL:-gemini-3.8-flash-high}"
 REFUTER="${PR_REVIEW_REFUTER:-agy:$GEMINI_MODEL}"
 BURDEN="${PR_REVIEW_BURDEN:-strict}"
-TIMEOUT="${PR_REVIEW_REFUTE_TIMEOUT:-${PR_REVIEW_AGY_TIMEOUT:-9m}}"
+refute_defaults; TIMEOUT="$REFUTE_TIMEOUT"
 
 die() { printf '\033[31mselftest: %s\033[0m\n' "$*" >&2; exit 1; }
 say() { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }

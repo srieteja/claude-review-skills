@@ -150,5 +150,32 @@ check "max becomes medium" eff max medium
 check "junk becomes medium" eff turbo medium
 check "empty stays empty" eff "" ""
 
+echo "refuter defaults"
+check "refute_defaults: 8m and 8 jobs when nothing is set" is 'refute_defaults; echo "$REFUTE_TIMEOUT $REFUTE_JOBS"' "8m 8"
+EXTRA=(PR_REVIEW_REFUTE_TIMEOUT=3m PR_REVIEW_JOBS=2)
+check "  PR_REVIEW_REFUTE_TIMEOUT and PR_REVIEW_JOBS set them" is 'refute_defaults; echo "$REFUTE_TIMEOUT $REFUTE_JOBS"' "3m 2"
+EXTRA=(PR_REVIEW_AGY_TIMEOUT=4m)
+check "  the deprecated PR_REVIEW_AGY_TIMEOUT still counts" is 'refute_defaults; echo "$REFUTE_TIMEOUT"' "4m"
+EXTRA=(PR_REVIEW_AGY_TIMEOUT=4m PR_REVIEW_REFUTE_TIMEOUT=6m)
+check "  and loses to PR_REVIEW_REFUTE_TIMEOUT" is 'refute_defaults; echo "$REFUTE_TIMEOUT"' "6m"
+EXTRA=()
+
+echo "numeric settings"
+for v in 1 8 25 007 999999999; do
+  check "require_posint accepts $v" in_lib "require_posint X $v"
+done
+for v in 0 00 -1 abc 1.5 "" " 3" 1000000000 5m; do
+  check "require_posint refuses '$v' and names the variable" \
+    test "$(in_lib "require_posint PR_REVIEW_JOBS '$v' 2>&1 || true")" = "PR_REVIEW_JOBS must be a positive integer (got \"$v\")"
+done
+for v in 1 90 30s 8m 25m 2h; do
+  check "require_duration accepts $v" in_lib "require_duration X $v"
+done
+for v in 0 0s 0m 00h -1 -5m abc 1.5 1.5m 5d m "" 5ms 1000000000; do
+  check "require_duration refuses '$v'" in_lib "! require_duration PR_REVIEW_S1_TIMEOUT '$v'"
+  check "require_duration names the variable for '$v'" \
+    in_lib "require_duration PR_REVIEW_S1_TIMEOUT '$v' 2>&1 | grep -q '^PR_REVIEW_S1_TIMEOUT must be'"
+done
+
 [ "$fail" -eq 0 ] && printf '\n\033[32mall lib checks passed\033[0m\n' || printf '\n\033[31mlib checks FAILED\033[0m\n'
 exit $fail

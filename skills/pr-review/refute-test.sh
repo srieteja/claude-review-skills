@@ -22,6 +22,7 @@ for a in "$@"; do
   prev="$a"
 done
 echo "$m" >> "$STUB_CALLS"
+[ -z "${STUB_AGY_SLEEP:-}" ] || { sleep "$STUB_AGY_SLEEP"; echo 'AGY_ERROR: {"short_error":"DEADLINE_EXCEEDED","error_code":504}' >&2; exit 1; }
 case " ${STUB_QUOTA_MODELS:-} " in *" $m "*)
   echo 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached.","status":"RESOURCE_EXHAUSTED","error_code":429}' >&2
   echo '{"status":"ERROR","response":"read a.dart"}'; exit 1 ;;
@@ -43,6 +44,9 @@ p=""; prev=""; cm=""; ce=""
 for a in "$@"; do [ "$prev" = -p ] && p="$a"; [ "$prev" = --model ] && cm="$a"; [ "$prev" = --effort ] && ce="$a"; prev="$a"; done
 echo "claude" >> "$STUB_CALLS"
 echo "$cm${ce:+@$ce}" >> "$STUB_CALLS.models"
+[ -z "${STUB_CLAUDE_SLEEP:-}" ] || sleep "$STUB_CLAUDE_SLEEP"
+# STUB_CLAUDE_SLEEP_ONCE stalls only the first call; the retry answers.
+[ -z "${STUB_CLAUDE_SLEEP_ONCE:-}" ] || [ "$(wc -l < "$STUB_CALLS")" -gt 1 ] || sleep "$STUB_CLAUDE_SLEEP_ONCE"
 case " ${STUB_CLAUDE_QUOTA_MODELS:-} " in *" $cm "*) STUB_CLAUDE_STATUS=403 ;; esac
 [ -z "${STUB_TOKEN_LOG:-}" ] || printf '%s' "${ANTHROPIC_AUTH_TOKEN:-}" > "$STUB_TOKEN_LOG"
 [ -z "${STUB_ENV_LOG:-}" ] || printf 'base=%s simple=%s ollama=%s\n' \
@@ -59,10 +63,19 @@ export OLLAMA_API_KEY=stub
 export PATH="$SB/bin:$PATH" REVIEW_SKILLS_CONFIG="$SB/no-config"
 unset PR_REVIEW_REFUTER_FALLBACK STUB_CLAUDE_QUOTA_MODELS STUB_QUOTA_MODELS STUB_FAIL STUB_CLAUDE_STATUS STUB_CLAUDE_RESULT
 
+# claim text is per-id, so refute's duplicate-claim merge never fires unless a test asks for it.
+claim() { # id file line text
+  printf '{"id":"%s","file":"%s","line":%s,"claim":"%s","mechanism":"m","repro":"r"}' "$1" "$2" "$3" "$4"
+}
 claims() { # id...
   printf '{"findings":['
-  sep=""; for id in "$@"; do
-    printf '%s{"id":"%s","file":"a.dart","line":1,"claim":"c","mechanism":"m","repro":"r"}' "$sep" "$id"; sep=,
+  sep=""; for id in "$@"; do printf '%s%s' "$sep" "$(claim "$id" a.dart 1 "c $id")"; sep=,; done
+  printf ']}\n'
+}
+specs() { # "id file line text"...  -- explicit claims, for the duplicate-merge tests
+  printf '{"findings":['
+  sep=""; for s in "$@"; do
+    set -- $s; printf '%s%s' "$sep" "$(claim "$1" "$2" "$3" "$4")"; sep=,
   done
   printf ']}\n'
 }
@@ -80,6 +93,39 @@ run() { # args...  (claims in $SB/f.json)
 }
 calls()   { tr '\n' ' ' < "$SB/calls" | sed 's/ $//'; }
 verdict() { jq -r ".$2" "$W/verdicts/$1.json"; }
+
+echo "numeric settings are validated before any call"
+claims a > "$SB/f.json"
+for bad in 0 -1 abc 1.5; do
+  for pair in "PR_REVIEW_JOBS:jobs" "PR_REVIEW_REFUTE_TIMEOUT:timeout"; do
+    var="${pair%%:*}"; flag="--${pair##*:}"
+    env "$var=$bad" STUB_CALLS="$SB/calls" "$HERE/refute" --findings "$SB/f.json" --tree "$SB/repo" --root "$SB/repo" \
+      --work "$SB/wv" --model m1 >"$SB/out" 2>&1; rc=$?
+    check "$var=$bad is refused, naming the variable" bash -c '[ "$1" -ne 0 ] && grep -q "^$2 must be" "$3/out"' _ "$rc" "$var" "$SB"
+    : > "$SB/calls"
+    STUB_CALLS="$SB/calls" "$HERE/refute" --findings "$SB/f.json" --tree "$SB/repo" --root "$SB/repo" --work "$SB/wf" --model m1 "$flag" "$bad" >"$SB/out" 2>&1; rc=$?
+    check "$flag $bad is refused, naming the flag" bash -c '[ "$1" -ne 0 ] && grep -q "^$2 must be" "$3/out"' _ "$rc" "$flag" "$SB"
+    check "  and no call was made" [ ! -s "$SB/calls" ]
+  done
+done
+for ok in 90 30s 2h; do
+  PR_REVIEW_REFUTE_TIMEOUT="$ok" run --model m1
+  check "a timeout of $ok is accepted" [ "$RC" -eq 0 ]
+done
+
+echo "finding ids are file names"
+claims '../../x' > "$SB/f.json"
+run --model m1
+check "an id that climbs out of the work dir is refused" [ "$RC" -ne 0 ]
+check "  with a message about the id"                   grep -qi "id" "$SB/out"
+check "  and nothing was written above the work dir"    [ ! -e "$SB/x.json" ] && [ ! -e "$SB/../x.json" ]
+check "  nor was the validator called"                  [ -z "$(calls)" ]
+claims 'a/b' > "$SB/f.json"; run --model m1
+check "a slash in an id is refused"                     [ "$RC" -ne 0 ]
+claims '.hidden' > "$SB/f.json"; run --model m1
+check "a leading dot is refused"                        [ "$RC" -ne 0 ]
+claims 'anthropic.c01-F1' > "$SB/f.json"; run --model m1
+check "a namespaced id is accepted"                     [ "$RC" -eq 0 ]
 
 echo "agy per-model quota fallback"
 claims F1 > "$SB/f.json"
@@ -115,7 +161,57 @@ check "fallback list overlapping --model: no rerun" [ "$(calls)" = m1 ]
 
 unset PR_REVIEW_REFUTER_FALLBACK
 STUB_QUOTA_MODELS=m1 run --model m1
-check "default fallback is gemini-3.1-pro-high"     [ "$(calls)" = "m1 gemini-3.1-pro-high" ]
+check "default fallback is claude-opus-4-6-thinking" [ "$(calls)" = "m1 claude-opus-4-6-thinking" ]
+
+echo "a timeout is retried like any other failure"
+OLL="--transport ollama --model glm-x"
+claims F1 > "$SB/f.json"
+STUB_CLAUDE_SLEEP_ONCE=3 run $OLL --timeout 1
+check "claude call past the ceiling is retried"     [ "$(calls)" = "claude claude" ]
+check "  the verdict on the retry is used"          [ "$(verdict F1 verdict)" = REFUTED ]
+STUB_CLAUDE_SLEEP=3 run $OLL --timeout 1
+check "a call that always times out: two tries"     [ "$(calls)" = "claude claude" ]
+check "  claim is ERROR"                            [ "$(verdict F1 verdict)" = ERROR ]
+export PR_REVIEW_REFUTER_FALLBACK="m2"
+claims F1 > "$SB/f.json"
+STUB_AGY_SLEEP=2 run --model m1 --timeout 1
+check "agy that always outlives its ceiling: two tries, like any failure" [ "$(calls)" = "m1 m1" ]
+check "  claim is ERROR"                            [ "$(verdict F1 verdict)" = ERROR ]
+STUB_FAIL=1 run --model m1 --timeout 1
+check "a fast non-timeout failure is retried too"   [ "$(calls)" = "m1 m1" ]
+unset PR_REVIEW_REFUTER_FALLBACK
+
+echo "PR_REVIEW_AGY_TIMEOUT is a deprecated alias of PR_REVIEW_REFUTE_TIMEOUT"
+claims F1 > "$SB/f.json"
+PR_REVIEW_AGY_TIMEOUT=1 STUB_CLAUDE_SLEEP=3 run $OLL
+check "the old name still sets the ceiling: two timed-out tries" [ "$(calls)" = "claude claude" ]
+check "  claim is ERROR"                            [ "$(verdict F1 verdict)" = ERROR ]
+PR_REVIEW_REFUTE_TIMEOUT=10 PR_REVIEW_AGY_TIMEOUT=1 STUB_CLAUDE_SLEEP=2 run $OLL
+check "the new name wins over the old one"          [ "$(verdict F1 verdict)" = REFUTED ]
+
+echo "duplicate claims are checked once"
+specs "F1 a.dart 1 same" "F2 a.dart 3 same" > "$SB/f.json"
+run --model m1
+check "same file, claim, lines within 3: one call"  [ "$(calls)" = m1 ]
+check "  the first id has its verdict"              [ "$(verdict F1 verdict)" = REFUTED ]
+check "  the duplicate has one too, under its id"   [ "$(verdict F2 id)" = F2 ]
+check "  and the same verdict"                      [ "$(verdict F2 verdict)" = REFUTED ]
+specs "F1 a.dart 1 same" "F2 a.dart 5 same" > "$SB/f.json"
+run --model m1
+check "lines more than 3 apart: both checked"      [ "$(calls)" = "m1 m1" ]
+specs "F1 a.dart 1 same" "F2 b.dart 1 same" > "$SB/f.json"
+run --model m1
+check "different file: both checked"               [ "$(calls)" = "m1 m1" ]
+specs "F1 a.dart 1 same" "F2 a.dart 1 other" > "$SB/f.json"
+run --model m1
+check "different claim: both checked"              [ "$(calls)" = "m1 m1" ]
+specs "anthropic.c01-F1 a.dart 1 same" "agy.c01-F1 a.dart 1 same" > "$SB/f.json"
+run --model m1
+check "different finder family: both checked"      [ "$(calls)" = "m1 m1" ]
+specs "F1 a.dart 1 same" "F2 a.dart 3 same" "F3 a.dart 5 same" > "$SB/f.json"
+run --model m1
+check "compared to the representative, not a chain" [ "$(calls)" = "m1 m1" ]
+check "  F3 has its own verdict"                    [ "$(verdict F3 id)" = F3 ]
 
 echo "cross refutation when the primary is unavailable"
 export PR_REVIEW_GEMINI_MODEL=gemini-x PR_REVIEW_REFUTER_FALLBACK="claude-opus-x"

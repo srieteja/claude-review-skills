@@ -120,6 +120,8 @@ stub_log claude-find "$@"
 out="$(printf '%s\n' "$prompt" | sed -n 's|^Write your findings to \([^ ]*\) as JSON.*|\1|p' | head -1)"
 diff="$(printf '%s\n' "$prompt" | sed -n 's|.*The diff under review is at \([^ ]*\) and.*|\1|p' | head -1)"
 key="$(basename "${out%.json}")"
+# STUB_ORDER: one "key diff-bytes" line per slice, in the order slices start.
+[ -z "${STUB_ORDER:-}" ] || echo "$key $(wc -c < "$diff" | tr -d ' ')" >> "$STUB_ORDER"
 if [ -n "${STUB_QUOTA:-}" ]; then
   case "$key" in *c01) echo '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"num_turns":1,"result":"You'"'"'ve hit your session limit · resets 12:30am (Asia/Calcutta)"}'; exit 1 ;; esac
   sleep 4711; exit 1
@@ -142,14 +144,20 @@ case "$key" in *t[0-9][0-9])
     if [ -s "$br" ]; then echo brief=yes; else echo brief=none; fi
   } > "$(mktemp "$STUB_LOG/tctx.XXXXXX")" ;;
 esac
+# STUB_HOLD: stay live for that long, recording how many slices are live at once.
+if [ -n "${STUB_HOLD:-}" ]; then
+  mkdir -p "$STUB_LOG/live"; : > "$STUB_LOG/live/$$"
+  ls "$STUB_LOG/live" | wc -l | tr -d ' ' >> "$STUB_LOG/maxlive.n"
+  sleep "$STUB_HOLD"; rm -f "$STUB_LOG/live/$$"
+fi
 case "$key" in
   *_cross) sleep "${STUB_SLOW_CROSS:-0}" ;;
   *c[0-9][0-9]) sleep "${STUB_SLOW_FEATURES:-0}" ;;
 esac
 sleep "${STUB_SLOW_CLAUDE:-0}"
 first="$(sed -n 's|^+++ b/||p' "$diff" | head -1)"
-printf '{"findings":[{"id":"F1","file":"%s","line":42,"severity":"medium","claim":"stub %s","mechanism":"stub","repro":"stub"}]}\n' \
-  "$first" "$key" > "$out"
+printf '{"findings":[{"id":"%s","file":"%s","line":42,"severity":"medium","claim":"stub %s","mechanism":"stub","repro":"stub"}]}\n' \
+  "${STUB_ID:-F1}" "$first" "$key" > "$out"
 echo '{"type":"result","result":"1"}'
 STUB
 cat > "$SANDBOX/stub/agy" <<'STUB'
@@ -171,6 +179,11 @@ case "$schema" in
     stub_log agy-find "$@"
     diff="$(printf '%s\n' "$p" | sed -n 's|.*The diff under review is at \([^ ]*\) and.*|\1|p' | head -1)"
     first="$(sed -n 's|^+++ b/||p' "$diff" | head -1)"
+    # Real agy reports a spent model on stderr only; the stdout envelope has no is_error.
+    if [ -n "${STUB_AGY_QUOTA:-}" ]; then
+      echo 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached.","status":"RESOURCE_EXHAUSTED","error_code":429}' >&2
+      echo '{"status":"ERROR","response":"read a file"}'; exit 1
+    fi
     if [ -n "${STUB_EMPTY:-}" ]; then
       chk="$(sed -n 's|^diff --git a/.* b/||p' "$diff" | jq -R '. + ": traced callers"' | jq -sc .)"
       printf '{"structured_output":{"findings":[],"read":["%s"],"checked":%s}}\n' "$first" "$chk"; exit 0
@@ -228,6 +241,24 @@ check "  and the bare path does too" test -z "$(unchecked '["lib/a.dart"]')"
 check "lib/a.dart.bak does not cover lib/a.dart" test "$(unchecked '["lib/a.dart.bak: looked"]')" = lib/a.dart
 check "  nor does a longer path ending in it" test "$(unchecked '["xlib/a.dart: looked"]')" = lib/a.dart
 check "  nor a mention inside the text" test "$(unchecked '["notes: also see lib/a.dart"]')" = lib/a.dart
+
+# safe_id / valid_id: finding ids name files, so they are restricted to [A-Za-z0-9._-].
+sid() { jq -nr -L "$HERE" --arg i "$1" 'include "finding-id"; $i | safe_id'; }
+check "safe_id: an ordinary id is unchanged"      test "$(sid F1)" = F1
+check "  a path becomes one file name"            test "$(sid '../../x')" = "____x"
+check "  no slash survives"                       test "$(sid 'a/b\c')" = "a_b_c"
+check "  no .. survives"                          test "$(sid 'a..b')" = "a_b"
+check "  no leading dot"                          test "$(sid '.hidden')" = "_hidden"
+check "  at most 64 characters"                   test "$(printf '%s' "$(sid "$(for ((_n=0;_n<100;_n++)); do printf a; done)")" | wc -c | tr -d ' ')" = 64
+check "  empty is not empty"                      test "$(sid '')" = "_"
+validid() { jq -nr -L "$HERE" --arg i "$1" 'include "finding-id"; $i | valid_id'; }
+check "valid_id: a slice-prefixed id passes"      test "$(validid anthropic.c01-F1)" = true
+check "  a path does not"                         test "$(validid '../../x')" = false
+check "  a slash does not"                        test "$(validid 'a/b')" = false
+check "  .. does not"                             test "$(validid 'a..b')" = false
+check "  a leading dot does not"                  test "$(validid '.x')" = false
+check "the schema states the same pattern" \
+  jq -e '.properties.findings.items.properties.id.pattern == "^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$"' "$HERE/findings.schema.json"
 
 # fix_lanes: which autofix lanes a review's CONFIRMED findings need, in run order.
 lanes_of() { printf '%s' "$2" | jq -r -L "$HERE" --arg s "$1" 'include "lanes"; fix_lanes($s) | join(" ")'; }
@@ -396,6 +427,17 @@ check "  and no slice is left running" sh -c '! pgrep -f "[s]leep 4711" >/dev/nu
 check "  and no report claims a review" test ! -e "$d/$AUTHOR/widgets/$PIN_PR/pr${PIN_PR}-review.md"
 kill "$watchdog" 2>/dev/null || true; pkill -f '[s]leep 4711' 2>/dev/null || true
 
+# ---------------------------------------------------------------- finding ids
+echo "finding ids — a finder's id never becomes a path"
+d="$SANDBOX/badid"
+env PR_REVIEW_DIR="$d" STUB_ID='../../x' PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" \
+  "$HERE/pr-review.sh" "$PIN_PR" --no-cache --no-brief > "$d.log" 2>&1 || true
+BADMERGED="$(ls "$d/$AUTHOR/widgets/$PIN_PR/"*merged*.json 2>/dev/null | head -1)"
+check "the run produced merged findings" test -n "$BADMERGED"
+check "  no id holds a slash or .." sh -c "! grep -E '\"id\": ?\"[^\"]*(/|\\.\\.)' '$BADMERGED'"
+check "  the sanitised id is kept, prefixed by its slice" grep -qE '"id": ?"[a-z.]*c0[0-9]-_+x"' "$BADMERGED"
+check "  nothing was written outside the review store" test ! -e "$SANDBOX/x"
+
 echo "refuter — a claude model on the login"
 d="$SANDBOX/claude-refuter"
 env PR_REVIEW_DIR="$d" PR_REVIEW_REFUTER=anthropic:claude-refuter-x PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" \
@@ -473,6 +515,78 @@ check "every agy feature slice finished while the anthropic pool was busy" awk '
   /    anthropic\.(c[0-9]+|_cross) / { a++ }
   /    agy\.(c[0-9]+|_cross) / { if (a > 1) late = 1; g++ }
   END { exit !(g > 1 && !late) }' "$d.log"
+
+
+# ------------------------------------------------- pipeline speed
+echo "gates — a finder's test slices wait for its own feature slices only"
+d="$SANDBOX/gate"
+env PR_REVIEW_DIR="$d" STUB_SLOW_FEATURES=4 "${TWO[@]}" \
+  PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-cache --no-brief > "$d.log" 2>&1 || true
+check "agy's test slices ran before the slow anthropic feature slices finished" awk '
+  /    anthropic\.c[0-9]+ +[0-9]+ finding/ { if (!g) late = 1 }
+  /    agy\.t[0-9]+ / { g = 1 }
+  END { exit !(g && !late) }' "$d.log"
+check "  anthropic's test slices still waited for its own" awk '
+  /    anthropic\.t[0-9]+ / { t = 1 }
+  /    anthropic\.c[0-9]+ +[0-9]+ finding/ { if (t) late = 1 }
+  END { exit !(t && !late) }' "$d.log"
+
+echo "queue — largest slice first, five per transport by default"
+d="$SANDBOX/order"; rm -rf "$STUB_LOG"; mkdir -p "$STUB_LOG"; : > "$SANDBOX/order.txt"
+env PR_REVIEW_DIR="$d" PR_REVIEW_STAGE1_JOBS=1 STUB_ORDER="$SANDBOX/order.txt" \
+  PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-cache --no-brief > "$d.log" 2>&1 || true
+# Test slices wait on their gate, so the order holds within each group, not across them.
+check "with one slot, slices start in non-increasing size" \
+  awk '{ g = ($1 ~ /^t[0-9]/) ? "t" : "f"; if (g in prev && $2 > prev[g]) bad = 1; prev[g] = $2 }
+       END { exit !(NR > 3 && !bad) }' "$SANDBOX/order.txt"
+rm -rf "$STUB_LOG"; mkdir -p "$STUB_LOG"
+d="$SANDBOX/jobs"
+env PR_REVIEW_DIR="$d" PR_REVIEW_CHUNK_BYTES=500 STUB_HOLD=3 \
+  PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-cache > "$d.log" 2>&1 || true
+check "the fixture has more than five slices to hold" \
+  test "$(grep -cE '^    [a-z_0-9]+ +[0-9]+ finding' "$d.log")" -ge 6
+check "unset PR_REVIEW_STAGE1_JOBS runs five at once" \
+  test "$(sort -n "$STUB_LOG/maxlive.n" | tail -1)" = 5
+rm -rf "$STUB_LOG"; mkdir -p "$STUB_LOG"
+
+echo "agy finder quota — stderr alone defers stage 1"
+d="$SANDBOX/agy-quota"; rc=0
+env PR_REVIEW_DIR="$d" PR_REVIEW_FINDERS=agy:gemini-x PR_REVIEW_REFUTER=agy:gemini-y STUB_AGY_QUOTA=1 \
+  PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-cache --no-brief > "$d.log" 2>&1 || rc=$?
+check "an AGY_ERROR 429 with no is_error exits 75" test "$rc" -eq 75
+check "  naming the limit" grep -q 'RESOURCE_EXHAUSTED' "$d.log"
+
+echo "ollama finder — bounded by the slice timeout"
+mkdir -p "$SANDBOX/pystub"
+printf '#!/usr/bin/env bash\ncase "$1" in *ollama_messages.py) trap '"'"'kill $p; exit 143'"'"' TERM; sleep 29 & p=$!; wait $p; touch "%s" ; exit 1 ;; esac\nexec %s "$@"\n' "$SANDBOX/ollama-hang.finished" "$(command -v python3)" > "$SANDBOX/pystub/python3"
+chmod +x "$SANDBOX/pystub/python3"
+d="$SANDBOX/ollama-hang"; rc=0
+env PR_REVIEW_DIR="$d" PR_REVIEW_FINDERS=ollama:x PR_REVIEW_REFUTER=agy:gemini-y PR_REVIEW_S1_TIMEOUT=1s OLLAMA_API_KEY=stub \
+  PATH="$SANDBOX/pystub:$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-cache --no-brief > "$d.log" 2>&1 || rc=$?
+check "a hung ollama call is cut off: the run ends" test "$rc" -ne 0
+check "  by the timeout: the stub was killed, never ran to its end" test ! -e "$SANDBOX/ollama-hang.finished"
+check "  its slices are FAILED, not hanging" grep -q 'FAILED' "$d.log"
+check "  and nothing is left running" sh -c '! pgrep -x -f "sleep 29" >/dev/null'
+
+echo "cache — keyed on the finder's prompts only"
+CP="$SANDBOX/copy"; mkdir -p "$CP/skills" "$CP/lib"
+cp -R "$HERE" "$CP/skills/pr-review"; cp -R "$HERE/../../lib/." "$CP/lib/"
+d="$SANDBOX/cachekey"
+cached_run() { env PR_REVIEW_DIR="$d" PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" \
+  "$CP/skills/pr-review/pr-review.sh" "$PIN_PR" --no-brief > "$d.$1.log" 2>&1 || true; }
+cached_run 1
+echo "# edited" >> "$CP/skills/pr-review/refute.prompt"
+cached_run 2
+check "editing refute.prompt keeps the finder slices cached" grep -qE 'c01 +cached' "$d.2.log"
+echo "# edited" >> "$CP/skills/pr-review/review.prompt"
+cached_run 3
+check "editing review.prompt re-runs them" sh -c '! grep -qE "c01 +cached" "$1" && grep -qE "c01 +[0-9]+ finding" "$1"' _ "$d.3.log"
+echo "# edited" >> "$CP/skills/pr-review/scope/tests.txt"
+cached_run 4
+check "editing the test scope keeps the feature slices cached" grep -qE 'c01 +cached' "$d.4.log"
+echo "# edited" >> "$CP/skills/pr-review/scope/package.txt"
+cached_run 5
+check "editing the package scope re-runs them" sh -c '! grep -qE "c01 +cached" "$1"' _ "$d.5.log"
 
 # ------------------------------------------------------------------ per-PR lock
 echo "lock — one run per PR"
