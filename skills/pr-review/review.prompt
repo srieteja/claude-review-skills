@@ -16,6 +16,21 @@ Report defects that change behaviour for a user or caller:
   - security-relevant mistakes: key material, auth, permissions, injection
   - a public API contract broken without a migration path
 
+Also report these code-level classes when the diff contains them; they look like design or
+documentation issues but harm users:
+  - platform-agnostic logic placed in a platform-specific package
+  - test-only or in-memory key material reached from production code
+  - a public API returning an unexported type, or a closable resource with no named owner
+  - an endpoint hardcoded with no option to override it
+  - a primitive reimplemented, or a dependency added, where one already in the tree provides it
+  - protocol text built by hand beside a builder, or another package's src/ internals imported
+  - code with no caller or test, added for later
+  - a doc, CHANGELOG or comment claim the code does not deliver, such as "zeroed" over a copy that stays in memory
+  - an ambiguous or cancelled failure persisted as a lasting negative state; a second call that runs on zeroed material
+  - irreversible steps before the durable write they need, or a retry that leaves leftovers
+  - errors classified by substring or by a broad code
+  - a foreign-key filter that checks one flag; stored values that refuse LF but not CR
+
 A defect that was there before this PR counts too, when the code the diff touches reaches it.
 Report it like any other and cite the line where it lives; a later step decides whether it is
 fixed on this PR's branch or on trunk.
