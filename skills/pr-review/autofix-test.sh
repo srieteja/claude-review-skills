@@ -8,6 +8,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SB="$(mktemp -d "${TMPDIR:-/tmp}/autofix-test.XXXXXX")"; trap '[ -n "${KEEP:-}" ] || rm -rf "$SB"' EXIT
 export TMPDIR="$SB"                    # autofix.sh's mktemp work dirs land in the sandbox
 fail=0; n=0
+. "$HERE/test-lib.sh"
 ok()  { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 bad() { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=1; }
 check() { desc="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$desc"; else bad "$desc"; fi; }
@@ -322,6 +323,18 @@ setup; export STUB_CLAUDE_OUT="[$LIMIT_RESULT]" AUTOFIX_DEFER_FALLBACK=1000; run
 check "a limit with no reset time: exits 75"   rc_is 75
 check "  resumes after the flat fallback"      sh -c "t=\$(sed -n 's/^RESUME_AT=//p' '$C/stdout'); [ \$((t - \$(date +%s))) -ge 900 ] && [ \$((t - \$(date +%s))) -le 1100 ]"
 
+# A CLI build that names the reset only in words: "resets 9:20pm (UTC)", no date, so a time
+# already past today is tomorrow's.
+T=$(( $(date +%s) + 7200 ))
+WORDS="{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"api_error_status\":429,\"result\":\"You've hit your 5-hour limit · resets $(clock "$T") (UTC)\"}"
+setup; export STUB_CLAUDE_OUT="$WORDS" AUTOFIX_DEFER_FALLBACK=1000; run
+check "a limit that names its reset in words: exits 75" rc_is 75
+check "  resumes at that time, plus a minute"  said "RESUME_AT=$(( T - T % 60 + 60 ))"
+T=$(( $(date +%s) - 7200 ))
+WORDS="${WORDS//resets *(UTC)/resets $(clock "$T") (UTC)}"
+setup; export STUB_CLAUDE_OUT="$WORDS" AUTOFIX_DEFER_FALLBACK=1000; run
+check "  a time already past today is tomorrow's" said "RESUME_AT=$(( T - T % 60 + 86400 + 60 ))"
+
 # Fallback: a limited claude hands the same task to the next implementer.
 setup; export STUB_CLAUDE_OUT="[$LIMIT_RESULT]" OLLAMA_API_KEY=k-oll; run
 check "claude limited, ollama key set: ollama implements, exits 0" rc_is 0
@@ -607,12 +620,23 @@ check "exits 0"                                rc_is 0
 check "reports the opened PR"                  said "STATUS=opened:$URL"
 check "never re-runs claude"                   [ "$(calls claude)" = 1 ]
 check "relays the frozen implementer, not the env's" said "IMPLEMENTER=claude-sonnet-5-5"
-check "re-runs the test gate"                  [ "$(grep -c '^test' "$C/log/dart")" = 2 ]
+check "frozen patch matches prepare's fingerprint: gate skipped" [ "$(grep -c '^test' "$C/log/dart")" = 1 ]
+check "  the stacked body still leads with the fix" body_leads_with "Follow-ups from review:"
+check "  and names the PR it stands on, last"  [ "$(tail -n 1 "$C/log/body")" = "Stacked on #7 -- merge into its branch \`feature-x\`, not the default branch." ]
 check "pushes the frozen patch"                pushed_file_is new
 check "posts the frozen title"                 cmp -s "$C/log/title" "$FROZEN/title"
 check "posts the frozen body as edited"        logged body "EDITED BEFORE SHIPPING"
 
 check "commit subject is the frozen title"     subject_is "$(cat "$FROZEN/title")"
+
+# No record, or a record for other bytes: ship re-runs the test gate.
+setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN" AUTOFIX_MODEL=claude-sonnet-5-5; run
+rm -f "$FROZEN/gated"; export AUTOFIX_MODE=ship; run
+check "no gate record: ship re-runs the test gate" [ "$(grep -c '^test' "$C/log/dart")" = 2 ]
+setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN" AUTOFIX_MODEL=claude-sonnet-5-5; run
+echo "v1 0000 other base lane" > "$FROZEN/gated"; export AUTOFIX_MODE=ship; run
+check "fingerprint of other bytes: ship re-runs the test gate" [ "$(grep -c '^test' "$C/log/dart")" = 2 ]
+check "  and still ships"                      said "STATUS=opened:$URL"
 
 setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
 printf 'fix: tidy the reset path' > "$FROZEN/title"; rm "$C/out/merged.json" "$C/out/meta.json"

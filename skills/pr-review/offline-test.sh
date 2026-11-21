@@ -560,6 +560,28 @@ check "  RESUME_AT is the flat fallback" sh -c "t=\$(sed -n 's/^RESUME_AT=//p' '
 check "quota_resume_at: zero, empty and negative all fall back" bash -c '. "$1/quota-resume.sh"; now=$(date +%s)
   for v in 0 000 "" -5; do r="$(quota_resume_at "$v" 1000)"; [ $((r - now)) -ge 990 ] && [ $((r - now)) -le 1010 ] || exit 1; done; [ "$(quota_resume_at 100 1000)" = 160 ]' _ "$HERE"
 
+check "quota_resume_at: a reset beyond 7 days ahead uses the fallback" bash -c '. "$1/quota-resume.sh"; now=$(date +%s)
+  r="$(quota_resume_at $((now + 8 * 86400)) 1000)"; [ $((r - now)) -ge 990 ] && [ $((r - now)) -le 1010 ] || exit 1
+  [ "$(quota_resume_at $((now + 3 * 86400)) 1000)" = $((now + 3 * 86400 + 60)) ]' _ "$HERE"
+check "fmt_epoch: formats an epoch with GNU date" bash -c '. "$1/quota-resume.sh"; TZ=UTC fmt_epoch 86400 | grep -qx "1970-01-02 00:00"' _ "$HERE"
+mkdir -p "$SANDBOX/bsd-date"
+printf '#!/bin/sh\ncase "$1" in -d) exit 1 ;; esac\ncase "$1" in -r) shift; e=$1; shift; exec /bin/date -d "@$e" "$@" ;; esac\nexec /bin/date "$@"\n' > "$SANDBOX/bsd-date/date"; chmod +x "$SANDBOX/bsd-date/date"
+check "fmt_epoch: falls back to BSD date -r when -d is refused" bash -c '. "$1/quota-resume.sh"; PATH="$2:$PATH"; TZ=UTC fmt_epoch 86400 2>/dev/null | grep -qx "1970-01-02 00:00"' _ "$HERE" "$SANDBOX/bsd-date"
+check "quota_defer_fallback: the default is five hours" bash -c '. "$1/quota-resume.sh"; unset AUTOFIX_DEFER_FALLBACK; [ "$(quota_defer_fallback)" = 18000 ]' _ "$HERE"
+for bad in 0 000 -5 abc 1.5 99999999999; do
+  check "quota_defer_fallback: '$bad' is refused, naming the variable" bash -c '. "$1/quota-resume.sh"
+    AUTOFIX_DEFER_FALLBACK="$2"; out="$(quota_defer_fallback 2>&1)" && exit 1; case "$out" in *AUTOFIX_DEFER_FALLBACK*) ;; *) exit 1 ;; esac' _ "$HERE" "$bad"
+done
+check "autofix.sh refuses a bad AUTOFIX_DEFER_FALLBACK before any work" bash -c 'out="$(AUTOFIX_DEFER_FALLBACK=soon bash "$1/autofix.sh" 1 deadbeef /nonexistent "$2" 2>&1)"; rc=$?; [ $rc -ne 0 ] && case "$out" in *AUTOFIX_DEFER_FALLBACK*) ;; *) exit 1 ;; esac' _ "$HERE" "$SANDBOX"
+
+echo "numeric settings are refused at start-up"
+for bad in 0 -1 abc 1.5; do
+  for var in PR_REVIEW_S1_TIMEOUT PR_REVIEW_REFUTE_TIMEOUT PR_REVIEW_JOBS PR_REVIEW_STAGE1_JOBS; do
+    check "$var=$bad is refused, naming the variable" bash -c 'out="$(env "$1=$2" bash "$3/pr-review.sh" 7 2>&1)"; rc=$?; [ $rc -ne 0 ] && case "$out" in *"$1 must be"*) ;; *) exit 1 ;; esac' _ "$var" "$bad" "$HERE"
+  done
+  check "--jobs $bad is refused, naming the flag" bash -c 'out="$(bash "$2/pr-review.sh" 7 --jobs "$1" 2>&1)"; rc=$?; [ $rc -ne 0 ] && case "$out" in *"--jobs must be"*) ;; *) exit 1 ;; esac' _ "$bad" "$HERE"
+done
+
 echo "refuter — a claude model on the login"
 d="$SANDBOX/claude-refuter"
 env PR_REVIEW_DIR="$d" PR_REVIEW_REFUTER=anthropic:claude-refuter-x PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" \

@@ -57,6 +57,7 @@ set -euo pipefail
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/../../lib/common.sh"
+. "$HERE/quota-resume.sh"
 load_config
 
 LAST_EVENT='include "last-event"; last_event'
@@ -79,7 +80,7 @@ LINT_LEVEL="${AUTOFIX_LINT_LEVEL:-warning}"
 # pr-review only run it --sandbox, and it ignores cwd), so it is not an implementer.
 IMPLEMENTERS="${AUTOFIX_IMPLEMENTERS:-claude ollama}"
 OLLAMA_MODEL="${AUTOFIX_OLLAMA_MODEL:-glm-5.3}"
-DEFER_FALLBACK="${AUTOFIX_DEFER_FALLBACK:-18000}"   # seconds to wait when a limit names no reset: one five-hour window
+DEFER_FALLBACK="$(quota_defer_fallback)" || exit 1   # seconds to wait when a limit names no reset
 # `-`, not `:-`: set-but-empty is the opt-out. read -a splits without globbing against $PWD.
 read -r -a ANALYZE_ONLY <<< "${AUTOFIX_ANALYZE_ONLY-tests/*}" || true
 PR="$1"; SHA="$2"; REPO_DIR="$3"; OUTDIR="$4"
@@ -95,7 +96,7 @@ limit_hit() {
   LIMIT_WHY="$(jq -L "$HERE" -r 'include "last-event"; quota_hit' "$WORK/claude.json" 2>/dev/null)" || return 1
   [ -n "$LIMIT_WHY" ] || return 1
   LIMIT_RESET="$(jq -L "$HERE" -r 'include "last-event"; quota_reset // empty' "$WORK/claude.json" 2>/dev/null)" || LIMIT_RESET=""
-  [ -n "$LIMIT_RESET" ] && LIMIT_RESET=$((LIMIT_RESET + 60)) || LIMIT_RESET=$(( $(date +%s) + DEFER_FALLBACK ))
+  LIMIT_RESET="$(quota_resume_at "$LIMIT_RESET" "$DEFER_FALLBACK")"
 }
 # auth_refused -- whether the implementer that just ran was refused as signed out, unpaid or unauthorised
 # (401/403) or unpaid (402). Not a limit: nothing lifts it, so it never defers the run. Sets AUTH_WHY.
@@ -103,8 +104,6 @@ auth_refused() {
   AUTH_WHY="$(jq -L "$HERE" -r 'include "last-event"; auth_hit' "$WORK/claude.json" 2>/dev/null)" || return 1
   [ -n "$AUTH_WHY" ]
 }
-# fmt_epoch <epoch> -- GNU date first, BSD (macOS) as the fallback
-fmt_epoch() { date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$1" '+%Y-%m-%d %H:%M'; }
 lower()  { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # analyze_only <package-dir> -- whether AUTOFIX_ANALYZE_ONLY names it
 analyze_only() {
@@ -393,6 +392,19 @@ lint_prepass() {
   } > "$WORK/task.md"
 }
 
+# gate_fingerprint <patch> -- what a passing test gate vouches for: these patch bytes on this
+# base, under this lane and these analyze-only globs (they pick `dart analyze` over `dart test`).
+# Title and body don't reach the tests, so editing them leaves it unchanged. Prints nothing and
+# fails if the patch can't be hashed, so a caller that can't fingerprint re-gates.
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi
+}
+gate_fingerprint() {
+  local h
+  h="$(sha256_of < "$1" 2>/dev/null | awk '{ print $1 }')" && [ -n "$h" ] || return 1
+  printf 'v1 %s %s %s %s\n' "$h" "$BASE_SHA" "$LANE" "${ANALYZE_ONLY[*]-}"
+}
+
 if [ "$MODE" = ship ]; then
   say "shipping the patch frozen at prepare for #$PR -- claude is not re-run"
   PATCH="$FROZEN/fix.patch"
@@ -544,6 +556,20 @@ done < <(git -C "$TREE" diff --cached --name-only --no-renames -z)
 
 # A live-rig pack is test-only code, so analysis bounds what its patch can break; the PR's
 # own CI runs it for real. The body names each one -- a weaker gate is never a silent one.
+# Ship skips the test loop when the frozen patch and base are exactly what prepare's passing gate
+# saw: the watcher ships seconds after prepare, and the re-gate is ~7 minutes of the same result.
+# The apply and package checks above still run. Only stacked/trunk skip: the lint lane's gate
+# also depends on analyzer output for files the PR touches (lint_packages), which the
+# fingerprint doesn't cover. A missing or unreadable record means gate.
+SKIP_GATE=0
+if [ "$MODE" = ship ] && [ "$LANE" != lint ] && [ -r "$FROZEN/gated" ]; then
+  NOW_FP="$(gate_fingerprint "$PATCH")" || NOW_FP=""
+  [ -n "$NOW_FP" ] && [ "$NOW_FP" = "$(cat "$FROZEN/gated" 2>/dev/null)" ] && SKIP_GATE=1
+fi
+if [ "$SKIP_GATE" = 1 ]; then
+  say "gate skipped: frozen patch and base unchanged since prepare's passing gate"
+  PACKAGES=""
+fi
 i=0; ANALYZED=""
 while IFS= read -r pkg; do
   i=$((i + 1)); LOG="$WORK/gate.$i.log"
@@ -633,10 +659,16 @@ fi
 
 if [ "$MODE" = prepare ]; then
   mkdir -p "$FROZEN"
+  rm -f "$FROZEN/gated"   # a re-prepare into the same dir must not inherit the last run's record
   cp "$PATCH" "$FROZEN/fix.patch"; cp "$BODY" "$FROZEN/body.md"
   printf '%s' "$TITLE" > "$FROZEN/title"; printf '%s\n' "$SHA" > "$FROZEN/sha"
   printf '%s\n' "$IMPLEMENTER" > "$FROZEN/model"; printf '%s %s\n' "$BASE_BRANCH" "$BASE_SHA" > "$FROZEN/base"
   [ -z "$REVIEWER" ] || printf '%s\n' "$REVIEWER" > "$FROZEN/reviewer"
+  # Written last, and only if the frozen copy is the very bytes that were gated: ship hashes
+  # $FROZEN/fix.patch, so a copy that differs would never match anyway.
+  if [ "$LANE" != lint ] && FP="$(gate_fingerprint "$PATCH")" && [ "$FP" = "$(gate_fingerprint "$FROZEN/fix.patch")" ]; then
+    printf '%s\n' "$FP" > "$FROZEN/gated"
+  fi
   say "prepared: patch applies and tests pass for #$PR -- frozen in $FROZEN, nothing pushed"
   status prepared; exit 0
 fi
@@ -671,6 +703,15 @@ fi
 # one-shot re-run re-implements and builds a tree that won't match.
 if [ "$MODE" = ship ]; then RETRY="ship again to open its PR"
 else RETRY="open its PR by hand, or clear it for the next run: git push origin --delete $BRANCH"; fi
+# A stacked fix PR names the PR it stands on, so GitHub cross-links it onto that PR's timeline.
+# Done on a copy here, not in body.md: a human may have edited the frozen one. Trunk and lint
+# need none: their bodies already cite #$PR ("since #N merged", "predate #N", lint's own line),
+# and a "found while reviewing" line would only repeat that.
+if [ "$LANE" = stacked ] && ! grep -Eq "#$PR([^0-9]|\$)" "$BODY"; then
+  # Appended, so the body still leads with what the fix does.
+  { cat "$BODY"; printf '\nStacked on #%s -- merge into its branch `%s`, not the default branch.\n' "$PR" "$BASE_BRANCH"
+  } > "$WORK/pr-body.md" && BODY="$WORK/pr-body.md"
+fi
 FIX_URL="$(gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$BRANCH" \
   --title "$TITLE" --body-file "$BODY" | tail -n 1)" \
   || die "gh pr create failed -- $BRANCH is pushed; $RETRY"

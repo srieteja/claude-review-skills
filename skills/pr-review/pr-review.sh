@@ -73,6 +73,7 @@ die() { printf '\033[31mpr-review: %s\033[0m\n' "$*" >&2; exit 1; }
 . "$HERE/agy-quota.sh"
 [ -f "$HERE/quota-resume.sh" ] || die "missing $HERE/quota-resume.sh"
 . "$HERE/quota-resume.sh"
+DEFER_FALLBACK="$(quota_defer_fallback)" || exit 1
 say() { printf '\033[36m==>\033[0m %s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 warn() { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
 
@@ -678,8 +679,8 @@ else
       if [ -f "$WORK/quota" ]; then
         for t in $running; do kill_tree "${t#*:}"; done
         wait 2>/dev/null
-        resume="$(quota_resume_at "$(grep -E '^[0-9]+$' "$WORK/quota.reset" 2>/dev/null | sort -n | head -n 1)" "${AUTOFIX_DEFER_FALLBACK:-18000}")"
-        warn "stage 1: $(head -n 1 "$WORK/quota") -- deferred until $(date -d "@$resume" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$resume" '+%Y-%m-%d %H:%M'); finished slices are cached"
+        resume="$(quota_resume_at "$(grep -E '^[0-9]+$' "$WORK/quota.reset" 2>/dev/null | sort -n | head -n 1)" "$DEFER_FALLBACK")"
+        warn "stage 1: $(head -n 1 "$WORK/quota") -- deferred until $(fmt_epoch "$resume"); finished slices are cached"
         # The wrapper's protocol (peer-review passes it through to the watcher): nothing was
         # decided, and the pause lasts until the limit lifts, not a flat guess.
         echo "STATUS=deferred"; echo "RESUME_AT=$resume"
