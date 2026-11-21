@@ -108,7 +108,7 @@ If you build on top of these skills, for example a scheduler or a dashboard, wra
 | Brief | `PR_REVIEW_BRIEF_BUDGET_USD`, $1 by default | same |
 | Biggest lever | `PR_REVIEW_CHUNK_BYTES`: fewer, larger slices | same |
 
-- **Subscriptions.** With `claude` signed in to a subscription, runs use your session limit, not dollars. When the limit is hit, stage 1 stops at once. Finished slices are cached, so a rerun resumes where it stopped.
+- **Subscriptions.** With `claude` signed in to a subscription, runs use your session limit, not dollars. When a finder's limit is hit, stage 1 stops at once and the run exits 75 with `STATUS=deferred` and a `RESUME_AT` epoch (the limit's reset time plus a minute). Finished slices are cached, so a rerun resumes where it stopped. A signed-out or unauthorised finder is not a limit: the run fails with a sign-in message instead.
 - **Data egress to ollama.com.** When ollama is in the mix, the diff, the claims and every source file the model opens are sent to ollama.com. Leave `OLLAMA_API_KEY` unset for code that must not leave the vendors you already use.
 - **Local store.** Reviews are kept under `PR_REVIEW_DIR`, `~/.reviews` by default:
   - regular: `<store>/<author>/<repo>/<N>/`

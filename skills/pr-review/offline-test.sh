@@ -13,6 +13,7 @@ unset OLLAMA_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY ANTHROPIC_USE_API_KEY
 # per-user /var/folders dir, which is unwritable under a Seatbelt sandbox.
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/pr-review-test.XXXXXX")"
 . "$HERE/test-fixture.sh"
+. "$HERE/test-lib.sh"
 fixture_repo "$SANDBOX/fixture"
 cd "$FIXTURE_ROOT"
 PIN_PR=7; AUTHOR=alice
@@ -123,7 +124,14 @@ key="$(basename "${out%.json}")"
 # STUB_ORDER: one "key diff-bytes" line per slice, in the order slices start.
 [ -z "${STUB_ORDER:-}" ] || echo "$key $(wc -c < "$diff" | tr -d ' ')" >> "$STUB_ORDER"
 if [ -n "${STUB_QUOTA:-}" ]; then
-  case "$key" in *c01) echo '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"num_turns":1,"result":"You'"'"'ve hit your session limit · resets 12:30am (Asia/Calcutta)"}'; exit 1 ;; esac
+  case "$key" in *c01)
+    qtext="${STUB_QUOTA_TEXT:-}"; [ -n "$qtext" ] || qtext="You've hit your session limit · resets ${STUB_QUOTA_WHEN:-12:30am (Asia/Calcutta)}"
+    ev="$(printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":%s,"num_turns":1,"result":"%s"}' "${STUB_QUOTA_STATUS:-429}" "$qtext")"
+    # STUB_QUOTA_RESETSAT: a transcript whose rejected window carries that resetsAt, as a login's CLI reports it.
+    if [ -n "${STUB_QUOTA_RESETSAT:-}" ]; then
+      printf '[{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":%s}},%s]\n' "$STUB_QUOTA_RESETSAT" "$ev"
+    else printf '%s\n' "$ev"; fi
+    exit 1 ;; esac
   sleep 4711; exit 1
 fi
 [ -z "${STUB_CLAUDE_FAIL:-}" ] || { echo '{"type":"result","subtype":"error_max_turns","num_turns":9}'; exit 1; }
@@ -184,6 +192,8 @@ case "$schema" in
       echo 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached.","status":"RESOURCE_EXHAUSTED","error_code":429}' >&2
       echo '{"status":"ERROR","response":"read a file"}'; exit 1
     fi
+    # A delivered run whose stderr merely mentions a spent quota: exit 0, findings in the envelope.
+    [ -z "${STUB_AGY_NOISE:-}" ] || echo 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): quota mentioned by the model","error_code":429}' >&2
     if [ -n "${STUB_EMPTY:-}" ]; then
       chk="$(sed -n 's|^diff --git a/.* b/||p' "$diff" | jq -R '. + ": traced callers"' | jq -sc .)"
       printf '{"structured_output":{"findings":[],"read":["%s"],"checked":%s}}\n' "$first" "$chk"; exit 0
@@ -241,6 +251,55 @@ check "  and the bare path does too" test -z "$(unchecked '["lib/a.dart"]')"
 check "lib/a.dart.bak does not cover lib/a.dart" test "$(unchecked '["lib/a.dart.bak: looked"]')" = lib/a.dart
 check "  nor does a longer path ending in it" test "$(unchecked '["xlib/a.dart: looked"]')" = lib/a.dart
 check "  nor a mention inside the text" test "$(unchecked '["notes: also see lib/a.dart"]')" = lib/a.dart
+
+# quota_hit: a limit is reported by an error event, never by a successful result's own text.
+quota() { printf '%s' "$1" | jq -r -L "$HERE" 'include "last-event"; quota_hit // "none"'; }
+check "quota_hit: a successful result saying it hit a usage limit is not a quota hit" \
+  test "$(quota '{"type":"result","subtype":"success","is_error":false,"result":"you hit your usage limit"}')" = none
+check "  nor one with is_error absent" \
+  test "$(quota '{"type":"result","result":"You hit your session limit"}')" = none
+check "  nor in a transcript array" \
+  test "$(quota '[{"type":"result","is_error":false,"result":"usage limit reached"}]')" = none
+check "  an is_error result with that wording and no reset time is not" \
+  test "$(quota '{"type":"result","is_error":true,"result":"You hit your session limit"}')" = none
+check "  with a reset time it is" \
+  test "$(quota '{"type":"result","is_error":true,"result":"You hit your session limit · resets 9:20pm (UTC)"}')" = "You hit your session limit · resets 9:20pm (UTC)"
+check "  a reset in a zone it cannot read still counts as named" \
+  test "$(quota '{"type":"result","is_error":true,"result":"hit your usage limit · resets 12:30am (Asia/Calcutta)"}')" != none
+check "  a rejected window in the transcript names the reset" \
+  test "$(quota '[{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":99}},{"type":"result","is_error":true,"result":"hit your 5-hour limit"}]')" = "hit your 5-hour limit"
+check "  an is_error 429 is, whatever it says" \
+  test "$(quota '{"type":"result","is_error":true,"api_error_status":429,"result":"slow down"}')" = "slow down"
+check "  an is_error result with neither a status nor the wording is not" \
+  test "$(quota '{"type":"result","is_error":true,"result":"boom"}')" = none
+check "  a 429 in a successful result is not" \
+  test "$(quota '{"type":"result","is_error":false,"api_error_status":429,"result":"x"}')" = none
+# The wording fires on a result event only: never on what the model said along the way.
+check "  an assistant text saying it, then a successful result, is not" \
+  test "$(quota '[{"type":"assistant","message":{"content":[{"type":"text","text":"You'"'"'ve hit your limit · resets 9pm (UTC)"}]}},{"type":"result","is_error":false,"result":"done"}]')" = none
+check "  nor an is_error assistant event when no result event follows" \
+  test "$(quota '[{"type":"assistant","is_error":true,"result":"You hit your limit · resets 9:20pm (UTC)"}]')" = none
+check "  nor the reset time in that text" \
+  test "$(printf '%s' '[{"type":"assistant","is_error":true,"result":"hit your limit · resets 9:20pm (UTC)"}]' | jq -r -L "$HERE" 'include "last-event"; quota_reset // "none"')" = none
+check "  nor is it an auth failure" \
+  test "$(printf '%s' '[{"type":"assistant","is_error":true,"api_error_status":401,"result":"x"}]' | jq -r -L "$HERE" 'include "last-event"; auth_hit // "none"')" = none
+check "  an is_error 402 is not: unpaid is a billing failure" \
+  test "$(quota '{"type":"result","is_error":true,"api_error_status":402,"result":"pay up"}')" = none
+check "  an is_error 401 is not: that is a sign-in problem" \
+  test "$(quota '{"type":"result","is_error":true,"api_error_status":401,"result":"x"}')" = none
+check "  nor an is_error 403" \
+  test "$(quota '{"type":"result","is_error":true,"api_error_status":403,"result":"x"}')" = none
+auth() { printf '%s' "$1" | jq -r -L "$HERE" 'include "last-event"; auth_hit // "none"'; }
+check "auth_hit: an is_error 402 is" \
+  test "$(auth '{"type":"result","is_error":true,"api_error_status":402,"result":"pay up"}')" = "pay up"
+check "  an is_error 401 is" \
+  test "$(auth '{"type":"result","is_error":true,"api_error_status":401,"result":"not signed in"}')" = "not signed in"
+check "  an is_error 403 is" \
+  test "$(auth '{"type":"result","is_error":true,"api_error_status":403,"result":"forbidden"}')" = forbidden
+check "  a 401 in a successful result is not" \
+  test "$(auth '{"type":"result","is_error":false,"api_error_status":401,"result":"x"}')" = none
+check "  a 429 is not" \
+  test "$(auth '{"type":"result","is_error":true,"api_error_status":429,"result":"x"}')" = none
 
 # safe_id / valid_id: finding ids name files, so they are restricted to [A-Za-z0-9._-].
 sid() { jq -nr -L "$HERE" --arg i "$1" 'include "finding-id"; $i | safe_id'; }
@@ -417,7 +476,7 @@ echo "quota — the first session-limit result stops stage 1"
 d="$SANDBOX/quota"; start=$SECONDS; rc=0
 # Watchdog: without the fail-fast the run would wait out every slice; this ends them so a
 # regression fails the timing check instead of hanging the suite.
-( sleep 60; pkill -f '[s]leep 4711' ) & watchdog=$!
+( for ((_n=0;_n<30;_n++)); do sleep 2; pkill -f '[s]leep 4711'; done ) & watchdog=$!
 env PR_REVIEW_DIR="$d" STUB_QUOTA=1 PR_REVIEW_STAGE1_JOBS=3 PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" \
   "$HERE/pr-review.sh" "$PIN_PR" --no-cache > "$d.log" 2>&1 || rc=$?
 check "the run fails" test "$rc" -ne 0
@@ -437,6 +496,69 @@ check "the run produced merged findings" test -n "$BADMERGED"
 check "  no id holds a slash or .." sh -c "! grep -E '\"id\": ?\"[^\"]*(/|\\.\\.)' '$BADMERGED'"
 check "  the sanitised id is kept, prefixed by its slice" grep -qE '"id": ?"[a-z.]*c0[0-9]-_+x"' "$BADMERGED"
 check "  nothing was written outside the review store" test ! -e "$SANDBOX/x"
+
+# The deferral says when the limit lifts: RESUME_AT=<reset + 60s> on stdout, beside STATUS=deferred,
+# which is what peer-review passes through and the watcher pauses on. A reset with no date is
+# today's, or tomorrow's once past; one that names no readable time (or zone) is the flat fallback.
+echo "quota — stage 1 reports when the limit lifts"
+quota_run() {  # quota_run <name> <reset text> -- stdout in $d.out, stderr in $d.log
+  d="$SANDBOX/$1"; rc=0
+  ( for ((_n=0;_n<30;_n++)); do sleep 2; pkill -f '[s]leep 4711'; done ) & watchdog=$!
+  env PR_REVIEW_DIR="$d" STUB_QUOTA=1 STUB_QUOTA_WHEN="$2" AUTOFIX_DEFER_FALLBACK=1000 PR_REVIEW_STAGE1_JOBS=3 \
+    PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-cache > "$d.out" 2> "$d.log" || rc=$?
+  kill "$watchdog" 2>/dev/null || true; pkill -f '[s]leep 4711' 2>/dev/null || true
+}
+resume_at() { sed -n 's/^RESUME_AT=//p' "$d.out"; }
+t=$(( $(date +%s) + 7200 ))
+quota_run quota-at "$(clock "$t") (UTC)"
+check "a reset time ahead: exits 75" test "$rc" -eq 75
+check "  says STATUS=deferred on stdout" grep -qx 'STATUS=deferred' "$d.out"
+check "  RESUME_AT is the reset plus a minute" test "$(resume_at)" = "$(( t - t % 60 + 60 ))"
+t=$(( $(date +%s) - 7200 ))
+quota_run quota-past "$(clock "$t") (UTC)"
+check "a reset time already past today means tomorrow" test "$(resume_at)" = "$(( t - t % 60 + 86400 + 60 ))"
+quota_run quota-nozone "12:30am (Asia/Calcutta)"
+check "a reset in a zone it cannot read: exits 75" test "$rc" -eq 75
+check "  RESUME_AT is the flat fallback" sh -c "t=\$(sed -n 's/^RESUME_AT=//p' '$d.out'); [ \$((t - \$(date +%s))) -ge 900 ] && [ \$((t - \$(date +%s))) -le 1100 ]"
+
+# An account the finder is signed out of, or not authorised on, is not a limit that lifts: the
+# run fails naming it, with no deferral and no resume time. So is a 402 (unpaid). A 429, or the
+# limit's wording with a reset time, defers.
+quota_run_as() {  # quota_run_as <name> <status> <text>
+  STUB_QUOTA_STATUS="$2" STUB_QUOTA_TEXT="$3" quota_run "$1" x
+}
+quota_run_as auth-401 401 "Invalid authentication credentials"
+check "a finder that is not signed in (401): the run fails, exit 1" test "$rc" -eq 1
+check "  no STATUS=deferred"  sh -c "! grep -q '^STATUS=deferred' '$d.out'"
+check "  no RESUME_AT"        sh -c "! grep -q '^RESUME_AT=' '$d.out'"
+check "  says to sign in"     grep -qi "not signed in" "$d.log"
+quota_run_as auth-403 403 "Forbidden"
+check "a finder not authorised (403): the run fails, exit 1" test "$rc" -eq 1
+check "  no STATUS=deferred"  sh -c "! grep -q '^STATUS=deferred' '$d.out'"
+check "  says it is not authorised" grep -qi "not authorised" "$d.log"
+quota_run_as quota-429 429 "slow down"
+check "a 429: exits 75" test "$rc" -eq 75
+quota_run_as billing-402 402 "payment required"
+check "a 402 is a billing failure: the run fails, exit 1" test "$rc" -eq 1
+check "  no STATUS=deferred" sh -c "! grep -q '^STATUS=deferred' '$d.out'"
+check "  no RESUME_AT"       sh -c "! grep -q '^RESUME_AT=' '$d.out'"
+# The limit's wording alone does not defer: with no reset time named it is a plain failure.
+quota_run_as quota-noreset 400 "You've hit your usage limit"
+check "limit wording naming no reset: the run fails, exit 1" test "$rc" -eq 1
+check "  no STATUS=deferred" sh -c "! grep -q '^STATUS=deferred' '$d.out'"
+quota_run_as quota-worded 400 "You've hit your usage limit · resets 9:20pm (UTC)"
+check "limit wording with a reset time: exits 75" test "$rc" -eq 75
+check "  with a RESUME_AT" grep -q '^RESUME_AT=' "$d.out"
+# A rejected window whose resetsAt is 0 is no reset time: the flat fallback applies.
+d="$SANDBOX/quota-zero"; rc=0
+( for ((_n=0;_n<30;_n++)); do sleep 2; pkill -f '[s]leep 4711'; done ) & watchdog=$!
+env PR_REVIEW_DIR="$d" STUB_QUOTA=1 STUB_QUOTA_RESETSAT=0 AUTOFIX_DEFER_FALLBACK=1000 PR_REVIEW_STAGE1_JOBS=3 \
+  PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-cache > "$d.out" 2> "$d.log" || rc=$?
+kill "$watchdog" 2>/dev/null || true; pkill -f '[s]leep 4711' 2>/dev/null || true
+check "a resetsAt of 0: exits 75" test "$rc" -eq 75
+check "  RESUME_AT is the flat fallback" sh -c "t=\$(sed -n 's/^RESUME_AT=//p' '$d.out'); [ \$((t - \$(date +%s))) -ge 900 ] && [ \$((t - \$(date +%s))) -le 1100 ]"
+check "quota_resume_at: zero, empty and negative all fall back" bash -c '. "$1/quota-resume.sh"; now=$(date +%s)
+  for v in 0 000 "" -5; do r="$(quota_resume_at "$v" 1000)"; [ $((r - now)) -ge 990 ] && [ $((r - now)) -le 1010 ] || exit 1; done; [ "$(quota_resume_at 100 1000)" = 160 ]' _ "$HERE"
 
 echo "refuter — a claude model on the login"
 d="$SANDBOX/claude-refuter"
@@ -555,6 +677,77 @@ env PR_REVIEW_DIR="$d" PR_REVIEW_FINDERS=agy:gemini-x PR_REVIEW_REFUTER=agy:gemi
   PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-cache --no-brief > "$d.log" 2>&1 || rc=$?
 check "an AGY_ERROR 429 with no is_error exits 75" test "$rc" -eq 75
 check "  naming the limit" grep -q 'RESOURCE_EXHAUSTED' "$d.log"
+check "  with RESUME_AT, the flat fallback (agy names no reset)" grep -q '^RESUME_AT=[0-9]' "$d.log"
+d="$SANDBOX/agy-noise"; rc=0
+env PR_REVIEW_DIR="$d" PR_REVIEW_FINDERS=agy:gemini-x PR_REVIEW_REFUTER=agy:gemini-y STUB_AGY_NOISE=1 \
+  PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-cache --no-brief > "$d.log" 2>&1 || rc=$?
+check "an AGY_ERROR line on a call that exited 0 does not defer" test "$rc" -ne 75
+check "  and its findings are kept" grep -qE '^    [a-z_0-9]+ +[0-9]+ finding' "$d.log"
+
+# The real lib/ollama_messages.py against a local fake of ollama.com's /v1/messages, on a PATH
+# with no claude binary. Nothing here is mocked above the HTTP socket: the client builds the
+# request, reads the reply, and pr-review.sh takes the result envelope from it. The one
+# test-only seam is a python3 shim that appends --endpoint (argparse keeps the last), because
+# the client reads no environment and has no default: --endpoint is required, and the shell
+# caller passes "$OLLAMA_ORIGIN/v1/messages".
+echo "ollama finder — real client against a local fake endpoint, no claude on PATH"
+cat > "$SANDBOX/fake-ollama.py" <<'PY'
+import http.server, json, re, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("content-length", 0)); body = json.loads(self.rfile.read(n))
+        last = body["messages"][-1]["content"]
+        results = [b for b in last if isinstance(b, dict) and b.get("type") == "tool_result"] if isinstance(last, list) else []
+        entry = {"auth": self.headers.get("authorization"), "path": self.path, "tools": "tools" in body}
+        if results:
+            entry["result"] = results[0]["content"][:4000]
+        with open(sys.argv[2], "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        found = {"findings": [{"id": "OL1", "file": "ollama-fake.txt", "line": 7, "severity": "medium",
+                               "claim": "fake ollama finding", "mechanism": "stub", "repro": "stub"}],
+                 "read": ["ollama-fake.txt"]}
+        if not results:
+            # First turn: Read the diff at the path the prompt names, which lives under the work dir.
+            m = re.search(r"(/\S+?/chunks/\S+?\.diff)", body["messages"][0]["content"])
+            content = [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": m.group(1) if m else "no-diff-path-in-prompt"}}]
+        else:
+            content = [{"type": "text", "text": "Done.\n" + json.dumps(found)}]
+        reply = json.dumps({"content": content}).encode()
+        self.send_response(200); self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(reply))); self.end_headers(); self.wfile.write(reply)
+    def log_message(self, *a): pass
+s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write(str(s.server_address[1]))
+s.serve_forever()
+PY
+rm -f "$SANDBOX/fake.port" "$SANDBOX/fake.requests"
+python3 "$SANDBOX/fake-ollama.py" "$SANDBOX/fake.port" "$SANDBOX/fake.requests" &
+FAKE_PID=$!
+for ((_n=1;_n<=50;_n++)); do [ -s "$SANDBOX/fake.port" ] && break; sleep 0.1; done
+# A PATH of the system tools plus the stubs, minus claude: agy and its helper are copied in
+# (the stub finds log.sh beside itself), python3 is the endpoint shim.
+NC="$SANDBOX/noclaude"; mkdir -p "$NC"
+cp "$SANDBOX/stub/agy" "$SANDBOX/stub/log.sh" "$NC/"
+printf '#!/usr/bin/env bash\ncase "$1" in *ollama_messages.py) exec %s "$@" --endpoint "http://127.0.0.1:%s/v1/messages" ;; esac\nexec %s "$@"\n' \
+  "$(command -v python3)" "$(cat "$SANDBOX/fake.port")" "$(command -v python3)" > "$NC/python3"
+chmod +x "$NC/python3"
+d="$SANDBOX/ollama-fake"; rc=0
+env PR_REVIEW_DIR="$d" PR_REVIEW_FINDERS=ollama:fake-model PR_REVIEW_REFUTER=agy:gemini-y OLLAMA_ORIGIN=http://evil.invalid \
+  OLLAMA_API_KEY=stub-key PATH="$NC:$SANDBOX/fixture/gh:/usr/bin:/bin" \
+  "$HERE/pr-review.sh" "$PIN_PR" --no-cache --no-brief > "$d.log" 2>&1 || rc=$?
+kill "$FAKE_PID" 2>/dev/null || true; wait "$FAKE_PID" 2>/dev/null || true
+OMERGED="$d/$AUTHOR/widgets/$PIN_PR/merged.json"
+check "(the PATH really has no claude)" sh -c "! PATH='$NC:$SANDBOX/fixture/gh:/usr/bin:/bin' command -v claude"
+check "an ollama-only PATH with no claude runs stage 1" absent "$d.log" 'need.*claude|claude.* not found'
+check "the client reached the fake endpoint, with its key and the tool list" \
+  grep -q '"auth": "Bearer stub-key".*"path": "/v1/messages".*"tools": true' "$SANDBOX/fake.requests"
+check "the finder could Read its own diff under the work dir (tool_result is the diff, not a refusal)" \
+  grep -q '"result": "diff --git' "$SANDBOX/fake.requests"
+check "an inherited OLLAMA_ORIGIN did not move the request" absent "$SANDBOX/fake.requests" 'evil'
+check "the slices were accepted, with their findings" grep -qE '^    c[0-9]+ +[0-9]+ finding' "$d.log"
+check "  none FAILED" absent "$d.log" 'FAILED'
+check "the findings reach the merged output" jq -e 'any(.[]; .file == "ollama-fake.txt")' "$OMERGED"
+check "  the run completed" test "$rc" -eq 0
 
 echo "ollama finder — bounded by the slice timeout"
 mkdir -p "$SANDBOX/pystub"

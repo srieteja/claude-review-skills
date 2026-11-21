@@ -21,7 +21,7 @@ This is what a program built on top of these skills can rely on: a scheduler tha
 - Prepare prints `ENGINE=`, then `STATUS=prepared` and `DECISION=`, plus a `LANE= STATUS=` line for each fix lane it prepared.
 - Ship prints one bare `STATUS=` line for an approve or request-changes, or one `LANE= STATUS=` line per lane for a fix.
 - Exit 0 means it settled. Exit 1 means it was refused (`stale`) or failed.
-- Exit 75 (EX_TEMPFAIL) means every fix implementer is rate-limited: prepare prints `STATUS=deferred` and `RESUME_AT=<epoch>` (when the limit lifts), with no `DECISION=` and nothing frozen. It is neither a failure nor a settled review: a wrapper posts nothing, records no failure, and retries after `RESUME_AT`.
+- Exit 75 (EX_TEMPFAIL) means a model account is rate-limited -- every fix implementer, or the stage-1 finders (pr-review.sh prints the same two lines, which peer-review passes through): prepare prints `STATUS=deferred` and `RESUME_AT=<epoch>` (when the limit lifts), with no `DECISION=` and nothing frozen. It is neither a failure nor a settled review: a wrapper posts nothing, records no failure, and retries after `RESUME_AT`.
 
 ## Store
 

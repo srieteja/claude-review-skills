@@ -216,9 +216,9 @@ say "${CHAIN// / -> } refuting $NREP claim(s), $BURDEN burden, $JOBS at a time"
 # Whether a failed call means the model itself is gone for now, as opposed to a bad answer.
 # agy says so on stderr; claude reports a spent, unpaid, signed-out or rejected account only in the
 # result event. Another model may well be signed in, so a refused link moves on, never fails the run.
-unavailable() { # transport err-file raw-file
+unavailable() { # transport err-file raw-file call-exit-code
   case "$1" in
-    agy) agy_quota_hit "$2" ;;
+    agy) agy_quota_hit "$2" "$4" ;;
     *) jq -e -L "$HERE" 'include "last-event"; refused' "$3" >/dev/null 2>&1 ;;
   esac
 }
@@ -256,6 +256,7 @@ ask_validator() { # id attempt entry
              --strict-mcp-config --setting-sources "" \
              --disallowedTools Bash Write Edit NotebookEdit Task WebSearch WebFetch ;;
        esac ) > "$WORK/claims/$id.raw.$attempt" 2>"$WORK/claims/$id.err.$attempt" || rc=$?
+  CALL_RC=$rc   # the call's own exit, for unavailable()
   if [ "$rc" -eq 0 ]; then
     # agy: a bare object. claude: a transcript array.
     # .model: burden calibration is per model, so a verdict says which one judged it.
@@ -284,7 +285,7 @@ refute_one() {
       attempt=$((attempt + 1))
       st=0; ask_validator "$id" "$attempt" "$e" || st=$?
       [ "$st" -ne 0 ] || break 2
-      if unavailable "${e%%:*}" "$WORK/claims/$id.err.$attempt" "$WORK/claims/$id.raw.$attempt"; then
+      if unavailable "${e%%:*}" "$WORK/claims/$id.err.$attempt" "$WORK/claims/$id.raw.$attempt" "$CALL_RC"; then
         : > "$WORK/exhausted/$e"; spent="${spent:+$spent, }$m"; quota=1; continue 2
       fi
     done

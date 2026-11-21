@@ -97,8 +97,8 @@ limit_hit() {
   LIMIT_RESET="$(jq -L "$HERE" -r 'include "last-event"; quota_reset // empty' "$WORK/claude.json" 2>/dev/null)" || LIMIT_RESET=""
   [ -n "$LIMIT_RESET" ] && LIMIT_RESET=$((LIMIT_RESET + 60)) || LIMIT_RESET=$(( $(date +%s) + DEFER_FALLBACK ))
 }
-# auth_refused -- whether the implementer that just ran was refused as signed out or unauthorised
-# (401/403). Not a limit: nothing lifts it, so it never defers the run. Sets AUTH_WHY.
+# auth_refused -- whether the implementer that just ran was refused as signed out, unpaid or unauthorised
+# (401/403) or unpaid (402). Not a limit: nothing lifts it, so it never defers the run. Sets AUTH_WHY.
 auth_refused() {
   AUTH_WHY="$(jq -L "$HERE" -r 'include "last-event"; auth_hit' "$WORK/claude.json" 2>/dev/null)" || return 1
   [ -n "$AUTH_WHY" ]
@@ -482,13 +482,13 @@ else
         if [ -z "$DEFER_AT" ] || [ "$LIMIT_RESET" -lt "$DEFER_AT" ]; then DEFER_AT="$LIMIT_RESET"; fi
         DEFER_WHY="$impl: $LIMIT_WHY"
       else
-        warn "implementer $impl is not signed in / not authorised ($AUTH_WHY)"
+        warn "implementer $impl is not signed in / not authorised / unpaid ($AUTH_WHY)"
         AUTH_FAIL="$impl: $AUTH_WHY"
         DEFER_WHY="$AUTH_FAIL"
       fi
     done
     if [ -z "$IMPLEMENTER" ]; then
-      [ -z "$AUTH_FAIL" ] || [ -n "$DEFER_AT" ] || die "implementer not signed in / not authorised ($AUTH_FAIL) -- sign in and rerun; no PR"
+      [ -z "$AUTH_FAIL" ] || [ -n "$DEFER_AT" ] || die "implementer not signed in / not authorised / unpaid ($AUTH_FAIL) -- fix the account and rerun; no PR"
       [ -n "$DEFER_AT" ] || { warn "no implementer available in AUTOFIX_IMPLEMENTERS=\"$IMPLEMENTERS\" -- no PR"; exit 1; }
       warn "every available implementer is rate-limited -- deferring until $(fmt_epoch "$DEFER_AT")"
       status deferred; echo "RESUME_AT=$DEFER_AT"

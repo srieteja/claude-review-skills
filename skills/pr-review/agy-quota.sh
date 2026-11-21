@@ -4,10 +4,12 @@
 # model leaves every other model runnable, so the right response is the next model, not a wait
 # (the reset can be days out -- PR 2373's was 95h).
 
-# The signal is agy's own AGY_ERROR line on stderr, and only that. The stdout envelope is no
-# use: a model that dies mid-run has already narrated its reads there, and a task about rate
-# limiting would mention 429 in prose. Exit codes are not documented, so they are not used.
-agy_quota_hit() { # err-file
+# The signal is agy's own AGY_ERROR line on stderr, and only when the call also exited non-zero.
+# The stdout envelope is no use: a model that dies mid-run has already narrated its reads there,
+# and a task about rate limiting would mention 429 in prose. A run that exited 0 delivered, so a
+# stderr line that merely mentions a limit is not a spent model. Every caller goes through here.
+agy_quota_hit() { # err-file exit-code
+  [ "${2:-0}" -ne 0 ] || return 1
   grep '^AGY_ERROR:' "$1" 2>/dev/null | grep -qE 'RESOURCE_EXHAUSTED|"error_code": *429'
 }
 

@@ -27,6 +27,10 @@ case " ${STUB_QUOTA_MODELS:-} " in *" $m "*)
   echo 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached.","status":"RESOURCE_EXHAUSTED","error_code":429}' >&2
   echo '{"status":"ERROR","response":"read a.dart"}'; exit 1 ;;
 esac
+if [ -n "${STUB_AGY_NOISE:-}" ]; then  # exits 0, no verdict, and a stderr line that merely mentions a limit
+  echo 'AGY_ERROR: {"short_error":"model said RESOURCE_EXHAUSTED in prose","error_code":429}' >&2
+  echo '{"status":"OK","response":"no verdict"}'; exit 0
+fi
 if [ "${STUB_FAIL:-0}" = 1 ]; then
   echo 'AGY_ERROR: {"short_error":"INTERNAL (code 500)","status":"INTERNAL","error_code":500}' >&2
   echo '{"status":"ERROR","response":"hit a 429 earlier"}'; exit 1
@@ -145,6 +149,10 @@ check "  reason says quota"                         grep -q quota "$W/verdicts/F
 STUB_FAIL=1 run --model m1
 check "non-quota failure: one retry, same model"    [ "$(calls)" = "m1 m1" ]
 check "  no fallback, claim is ERROR"               [ "$(verdict F1 verdict)" = ERROR ]
+
+STUB_AGY_NOISE=1 run --model m1
+check "agy exits 0 with quota wording on stderr: not out of quota, same model retried" [ "$(calls)" = "m1 m1" ]
+check "  the link is not marked spent"              [ ! -e "$W/exhausted/agy:m1" ]
 
 run --model m1
 check "no failure: one call"                        [ "$(calls)" = m1 ]

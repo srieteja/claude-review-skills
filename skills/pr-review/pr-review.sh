@@ -71,6 +71,8 @@ PIN="${PR_REVIEW_SHA:-}"
 die() { printf '\033[31mpr-review: %s\033[0m\n' "$*" >&2; exit 1; }
 [ -f "$HERE/agy-quota.sh" ] || die "missing $HERE/agy-quota.sh"
 . "$HERE/agy-quota.sh"
+[ -f "$HERE/quota-resume.sh" ] || die "missing $HERE/quota-resume.sh"
+. "$HERE/quota-resume.sh"
 say() { printf '\033[36m==>\033[0m %s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 warn() { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
 
@@ -545,10 +547,11 @@ review_slice() {
       extract_findings "$WORK/chunks/$key.json" "$out"
       ;;
     agy)
+      agy_rc=0
       ( cd "$TREE" && agy_env agy --sandbox --add-dir "$TREE" --model "$F_MODEL" --output-format json \
           --print-timeout "$S1_TIMEOUT" --json-schema "$F_SCHEMA" \
           -p="$(cat "$WORK/chunks/$key.prompt")" \
-      ) > "$WORK/chunks/$key.json" 2>"$WORK/chunks/$key.err" || true
+      ) > "$WORK/chunks/$key.json" 2>"$WORK/chunks/$key.err" || agy_rc=$?
       jq -L "$HERE" -e "$LAST_EVENT"' | .structured_output
              | select((.findings|type=="array") and (.read|type=="array"))' \
         "$WORK/chunks/$key.json" > "$out" 2>/dev/null || rm -f "$out"
@@ -556,9 +559,19 @@ review_slice() {
   esac
   jq -L "$HERE" -r 'include "last-event"; quota_hit' \
     "$WORK/chunks/$key.json" > "$WORK/chunks/$key.quota" 2>/dev/null || true
-  [ ! -s "$WORK/chunks/$key.quota" ] || mv "$WORK/chunks/$key.quota" "$WORK/quota"
-  # agy reports a spent model on stderr only, with no is_error in the envelope.
-  if [ "$F_TRANSPORT" = agy ] && [ ! -s "$WORK/quota" ] && agy_quota_hit "$WORK/chunks/$key.err"; then
+  if [ -s "$WORK/chunks/$key.quota" ]; then
+    mv "$WORK/chunks/$key.quota" "$WORK/quota"
+    # When the limit lifts, if it says: one line per limited slice, the earliest is used.
+    jq -L "$HERE" -r 'include "last-event"; quota_reset // empty' "$WORK/chunks/$key.json" \
+      >> "$WORK/quota.reset" 2>/dev/null || true
+  fi
+  # A signed-out, unpaid or unauthorised account is a failure to fix, not a limit that lifts.
+  jq -L "$HERE" -r 'include "last-event"; auth_hit' "$WORK/chunks/$key.json" > "$WORK/chunks/$key.auth" 2>/dev/null || true
+  if [ -s "$WORK/chunks/$key.auth" ]; then mv "$WORK/chunks/$key.auth" "$WORK/auth"; fi
+  # agy reports a spent model on stderr only, with no is_error in the envelope. Its own
+  # AGY_ERROR line counts only when the call also failed: a run that exited 0 delivered, and
+  # a stderr line that merely mentions a limit is not a spent account.
+  if [ "$F_TRANSPORT" = agy ] && [ ! -s "$WORK/quota" ] && agy_quota_hit "$WORK/chunks/$key.err" "${agy_rc:-0}"; then
     echo "agy $F_MODEL: RESOURCE_EXHAUSTED, $(grep -m1 '^AGY_ERROR:' "$WORK/chunks/$key.err" \
       | sed 's/^AGY_ERROR: *//' | jq -r '.short_error // empty' 2>/dev/null)" > "$WORK/quota"
   fi
@@ -642,10 +655,10 @@ else
   # Test slices take the brief as context; with no brief a finder's test slices wait for that
   # transport's own feature slices (a slow transport does not hold another's tests back) and
   # take their findings instead. A session-limit result from any slice
-  # stops stage 1: nothing more is launched, every running slice is killed with its children,
+  # (a signed-out one fails the run instead) stops stage 1: nothing more is launched, every running slice is killed with its children,
   # and the run dies naming the limit.
   run_stage1() {
-    local FINDER_TRANSPORTS="" queue="" running="" open="" rest item f k s live still ctx t tr
+    local resume FINDER_TRANSPORTS="" queue="" running="" open="" rest item f k s live still ctx t tr
     for f in $FINDERS; do
       load_finder "$f"; case " $FINDER_TRANSPORTS " in *" $F_TRANSPORT "*) ;; *) FINDER_TRANSPORTS="$FINDER_TRANSPORTS $F_TRANSPORT" ;; esac
     done
@@ -657,10 +670,19 @@ else
     while [ -n "$queue$running" ]; do
       live=" $(jobs -pr | tr '\n' ' ')"
       still=""; for t in $running; do case "$live" in *" ${t#*:} "*) still="$still $t" ;; esac; done; running="$still"
+      if [ -f "$WORK/auth" ]; then
+        for t in $running; do kill_tree "${t#*:}"; done
+        wait 2>/dev/null
+        die "stage 1: $(head -n 1 "$WORK/auth") -- the finder's account is not signed in / not authorised / unpaid; fix the account and rerun (finished slices are cached)"
+      fi
       if [ -f "$WORK/quota" ]; then
         for t in $running; do kill_tree "${t#*:}"; done
         wait 2>/dev/null
-        warn "stage 1: $(head -n 1 "$WORK/quota") -- deferred; finished slices are cached, rerun after the reset"
+        resume="$(quota_resume_at "$(grep -E '^[0-9]+$' "$WORK/quota.reset" 2>/dev/null | sort -n | head -n 1)" "${AUTOFIX_DEFER_FALLBACK:-18000}")"
+        warn "stage 1: $(head -n 1 "$WORK/quota") -- deferred until $(date -d "@$resume" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$resume" '+%Y-%m-%d %H:%M'); finished slices are cached"
+        # The wrapper's protocol (peer-review passes it through to the watcher): nothing was
+        # decided, and the pause lasts until the limit lifts, not a flat guess.
+        echo "STATUS=deferred"; echo "RESUME_AT=$resume"
         exit 75
       fi
       if [ "$BRIEF_OK" -eq 1 ]; then open="$FINDER_TRANSPORTS"; else
