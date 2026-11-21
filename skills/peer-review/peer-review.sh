@@ -13,7 +13,8 @@
 # AUTOFIX_LINT=1 adds the lint lane beside it: dart analyze issues on that base, in the
 # packages the PR touches.
 #
-#   peer-review.sh <pr> [review options]   review, decide, freeze
+#   peer-review.sh <pr> [review options]   review, decide, freeze -- regular engine
+#   peer-review.sh <pr> --intense [opts]   the same with the intense engine
 #   peer-review.sh <pr> --decide <d> [--body-file f]
 #                                          re-freeze decision d from the review already done, no
 #                                          re-review: a human overriding the call (fix here
@@ -25,9 +26,10 @@
 # While prepare or --decide runs, <store>/<author>/<repo>/<N>/running holds its pid, so a
 # dashboard can tell a live run from a crashed one.
 #
-# The engine is intense-review.sh when the intense preset resolves to a refuter of a third
-# family that is ready -- on ollama, one that answers a 1-token call now -- and pr-review.sh
-# with its own models otherwise. Run from inside the PR's repository.
+# The engine is pr-review.sh with its own models by default. It is intense-review.sh only when
+# asked (--intense, or PEER_REVIEW_ENGINE=intense) -- and then only if the intense preset
+# resolves to a refuter of a third family that is ready (on ollama, one that answers a 1-token
+# call now); if not, the run fails rather than falling back. Run from inside the PR's repository.
 #
 # The decision lands in <store>/<author>/<repo>/<N>/decision/{decision,sha,why,body.md}; a fix's
 # patch, title and body in .../autofix/, the trunk lane's in .../autofix/trunk/. why is one line naming the branch taken. A
@@ -56,7 +58,7 @@
 #      OLLAMA_API_KEY (no key, no probe: the regular review runs)
 #      PR_REVIEW_INTENSE_REFUTER (the model probed)
 #      PR_REVIEW_DIR (default ~/.reviews), PR_REVIEW_INTENSE_DIR (default <PR_REVIEW_DIR>/_intense)
-#      PEER_REVIEW_ENGINE=regular (never run the intense engine; default auto)
+#      PEER_REVIEW_ENGINE=regular|intense (default regular; --intense on the command line is the same as intense)
 #      PEER_REVIEW_INTENSE, PEER_REVIEW_REGULAR, PEER_REVIEW_AUTOFIX (the scripts wrapped, for tests)
 #      PR_REVIEW_LEARN=off (no capture, no restyled body), PR_REVIEW_LEARN_DIR, PEER_REVIEW_SHIPPER
 #        (watch when unattended) -- see review_learn.py
@@ -85,6 +87,7 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 usage() {
   cat >&2 <<USAGE
 usage: peer-review.sh <pr> [review options]   review and decide: approve, fix or request-changes
+       peer-review.sh <pr> --intense          the same with the intense engine (regular is the default)
        peer-review.sh <pr> --decide approve|request-changes|fix [--body-file f]
                                              re-freeze another decision, no re-review
        peer-review.sh <pr> --ship             post the decision
@@ -93,10 +96,11 @@ USAGE
   exit 1
 }
 
-PR=""; SHIP=0; DECIDE=""; BODY_FILE=""; PASS=()
+PR=""; SHIP=0; DECIDE=""; BODY_FILE=""; PASS=(); WANT_INTENSE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --ship) SHIP=1 ;;
+    --intense) WANT_INTENSE=1 ;;   # picks the engine here; never passed on
     --decide|--body-file)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in --decide) DECIDE="$2" ;; *) BODY_FILE="$2" ;; esac; shift ;;
@@ -123,6 +127,12 @@ if [ -n "$DECIDE" ]; then
   [ -z "$BODY_FILE" ] || [ -r "$BODY_FILE" ] || die "can't read --body-file $BODY_FILE"
 fi
 [ -z "$BODY_FILE" ] || [ -n "$DECIDE" ] || die "--body-file goes with --decide"
+[ "$WANT_INTENSE" -eq 0 ] || { [ "$SHIP" -eq 0 ] && [ -z "$DECIDE" ]; } || die "--intense picks the review engine; --ship and --decide run no review"
+case "${PEER_REVIEW_ENGINE:-regular}" in
+  regular) ;;
+  intense) WANT_INTENSE=1 ;;
+  *) die "PEER_REVIEW_ENGINE must be regular or intense, not '${PEER_REVIEW_ENGINE}'" ;;
+esac
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git repo -- run from the PR's repository"
 check_pr_repo
@@ -413,10 +423,13 @@ learn record rerun --head "$LIVE" $(printf '%s\n' "$STORES" | while IFS= read -r
 while IFS= read -r s; do d="$(review_dir "$s" "$AUTHOR" "$REPO" "$PR")"; rm -rf "$d/decision" "$d/autofix"; done <<EOF
 $STORES
 EOF
-if [ "${PEER_REVIEW_ENGINE:-auto}" != regular ] && intense_ready; then
+# Regular unless intense was asked for. Asked for and not ready is a failure, not a fallback:
+# the caller chose the deeper review and must hear that it didn't happen.
+if [ "$WANT_INTENSE" -eq 1 ]; then
+  intense_ready || die "intense was asked for but isn't ready -- nothing reviewed"
   ENGINE=intense; STORE="$INTENSE_STORE"
 else
-  ENGINE=regular; STORE="$REGULAR_STORE"; say "falling back to the regular review"
+  ENGINE=regular; STORE="$REGULAR_STORE"
 fi
 echo "ENGINE=$ENGINE"
 OUTDIR="$(review_dir "$STORE" "$AUTHOR" "$REPO" "$PR")"; REPORT="$OUTDIR/pr$PR-review.md"; DEC="$OUTDIR/decision"

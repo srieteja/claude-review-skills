@@ -12,8 +12,8 @@ sequenceDiagram
   participant G as GitHub
   U->>P: <N>
   P->>G: pr view (author, state, fork), api user
-  P->>O: 1-token /v1/messages to the refuter model
-  O-->>P: 200 → intense, else regular
+  P->>O: only with --intense: 1-token /v1/messages to the refuter model
+  O-->>P: 200 → intense, else exit 1 (no fallback)
   P->>E: <N> [opts], store passed explicitly
   E-->>P: report [+ merged/meta.json]
   alt 0 CONFIRMED, all checked, all slices

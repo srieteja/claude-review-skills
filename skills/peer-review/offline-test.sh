@@ -52,6 +52,7 @@ cat > "$SB/bin/engine" <<'STUB'
 name="$(basename "$0")"
 echo "$* REFUTER=${PR_REVIEW_REFUTER:-} FINDERS=${PR_REVIEW_FINDERS:-} PRESET=${PR_REVIEW_PRESET:-}" >> "$STUB_LOG/$name"
 echo "${REVIEW_SKILLS_LOCK_HELD:-none}" >> "$STUB_LOG/lock"
+[ -z "${STUB_ENGINE_OUT:-}" ] || printf '%s\n' "$STUB_ENGINE_OUT"
 [ "${STUB_ENGINE_RC:-0}" = 0 ] || exit "$STUB_ENGINE_RC"
 case "$name" in intense-review.sh) store="$PR_REVIEW_INTENSE_DIR" ;; *) store="$PR_REVIEW_DIR" ;; esac
 d="$store/$STUB_AUTHOR/widgets/$1"; mkdir -p "$d"
@@ -124,10 +125,10 @@ setup() {
   git init -q "$C/repo"; ROOT="$(git -C "$C/repo" rev-parse --show-toplevel)"
   export STUB_LOG="$C/log" PR_REVIEW_INTENSE_DIR="$C/intense" PR_REVIEW_DIR="$C/regular" \
          OLLAMA_API_KEY=k-secret-123 STUB_SHA="$REV" STUB_LIVE="$REV" STUB_ME=me STUB_URL="$URL" \
-         STUB_REVIEW=clean STUB_REPORT_EXTRA="" STUB_ENGINE_RC=0 STUB_AUTOFIX_RC=0 STUB_AUTOFIX_OUT="" \
+         STUB_REVIEW=clean STUB_REPORT_EXTRA="" STUB_ENGINE_RC=0 STUB_ENGINE_OUT="" STUB_AUTOFIX_RC=0 STUB_AUTOFIX_OUT="" \
          STUB_CURL_RC=0 STUB_CURL_CODE=200 STUB_POST_RC=0 STUB_FILES_RC=0 STUB_AUTOFIX_ERR="" \
          STUB_FILES='[[{"filename":"lib/a.dart","patch":"@@ -1,2 +1,10 @@\n+x"}]]' \
-         PR_REVIEW_LEARN_DIR="$C/learn" STUB_WRITER=same
+         PR_REVIEW_LEARN_DIR="$C/learn" STUB_WRITER=same PEER_REVIEW_ENGINE=intense
   unset STUB_AUTOFIX_OUT_stacked STUB_AUTOFIX_RC_stacked STUB_AUTOFIX_OUT_trunk STUB_AUTOFIX_RC_trunk \
         STUB_AUTOFIX_OUT_lint STUB_AUTOFIX_RC_lint AUTOFIX_LINT
 
@@ -149,7 +150,7 @@ payload() { jq -e "$1" "$C/log/posted-input"; }            # payload <jq test> -
 event()   { jq -se "$1" "$C/learn/events.jsonl"; }         # event <jq test> -- over every learn event
 learned() { jq -e "$1" "$INT/decision/learn.json"; }
 
-echo "engine: ollama probed, intense if it answers"
+echo "engine: regular by default; intense (asked for) probes ollama and fails if it is not ready"
 setup; run 7 --no-cache
 check "probe passes: exits 0"                      rc_is 0
 check "  runs intense, options passed through"     logged intense-review.sh "7 --no-cache"
@@ -164,9 +165,9 @@ check "  decides in the intense store"             decided "$INT" approve
 setup; export PR_REVIEW_INTENSE_REFUTER=ollama:qwen-9; run 7; unset PR_REVIEW_INTENSE_REFUTER
 check "a configured refuter is the one probed"     logged curl '"model":"qwen-9"'
 
-setup; unset OLLAMA_API_KEY; export PR_REVIEW_REFUTER=ollama:glm-5.3-flash PR_REVIEW_FINDERS="ollama:x"; run 7
+setup; unset OLLAMA_API_KEY PEER_REVIEW_ENGINE; export PR_REVIEW_REFUTER=ollama:glm-5.3-flash PR_REVIEW_FINDERS="ollama:x"; run 7
 unset PR_REVIEW_REFUTER PR_REVIEW_FINDERS
-check "no key: exits 0"                            rc_is 0
+check "default engine, no key: exits 0"                            rc_is 0
 check "  never calls curl"                         [ "$(calls curl)" = 0 ]
 check "  runs the regular review"                  [ "$(calls pr-review.sh)" = 1 ]
 check "  says so"                                  said "ENGINE=regular"
@@ -176,7 +177,9 @@ check "  decides in the regular store"             decided "$REG" approve
 check "  nothing in the intense store"             [ ! -e "$INT/decision" ]
 
 setup; export STUB_CURL_CODE=401; run 7
-check "probe 401: falls back to regular"           said "ENGINE=regular"
+check "intense, probe 401: fails, no fallback"     rc_is 1
+check "  says it isn't ready"                      says "isn't ready"
+check "  reviews nothing"                          [ "$(calls intense-review.sh)$(calls pr-review.sh)" = 00 ]
 unset STUB_CURL_CODE
 
 setup; export PR_REVIEW_INTENSE_FINDERS=anthropic:claude-opus-5-5@medium PR_REVIEW_INTENSE_REFUTER=agy:gemini-x; run 7
@@ -185,15 +188,16 @@ check "an intense refuter not on ollama: intense, no probe" said "ENGINE=intense
 check "  never calls curl"                         [ "$(calls curl)" = 0 ]
 
 setup; export PR_REVIEW_INTENSE_REFUTER=anthropic:claude-x; run 7; unset PR_REVIEW_INTENSE_REFUTER
-check "an intense refuter of a finder's family: regular" said "ENGINE=regular"
+check "an intense refuter of a finder's family: fails, no fallback" rc_is 1
+check "  reviews nothing"                          [ "$(calls intense-review.sh)$(calls pr-review.sh)" = 00 ]
 check "  never calls curl"                         [ "$(calls curl)" = 0 ]
 
-setup; unset OLLAMA_API_KEY; export PR_REVIEW_PRESET=intense; run 7; unset PR_REVIEW_PRESET
+setup; unset OLLAMA_API_KEY PEER_REVIEW_ENGINE; export PR_REVIEW_PRESET=intense; run 7; unset PR_REVIEW_PRESET
 check "the regular engine never inherits a preset" logged pr-review.sh "PRESET="
 check "  of any kind"                              not logged pr-review.sh "PRESET=intense"
 check "  never runs intense"                       [ "$(calls intense-review.sh)" = 0 ]
 setup; export STUB_CURL_RC=28 STUB_CURL_CODE=000; run 7
-check "probe times out: falls back to regular"     said "ENGINE=regular"
+check "intense, probe times out: fails, no fallback" rc_is 1
 check "  probe is capped"                          logged curl "--max-time"
 
 echo "decision"
@@ -295,6 +299,12 @@ check "  relays deferred"                           said "STATUS=deferred"
 check "  and when to resume"                        said "RESUME_AT=1793300000"
 check "  no decision"                               silent DECISION
 check "  nothing frozen for --ship to post"         absent "$INT/decision" "$INT/autofix"
+# Stage 1 of the review itself is limited: the engine's exit 75 and its RESUME_AT reach the watcher.
+setup; export STUB_ENGINE_RC=75 STUB_ENGINE_OUT=$'STATUS=deferred\nRESUME_AT=1793300060'; run 7
+check "the review's stage 1 deferred on a limit: exits 75" rc_is 75
+check "  relays deferred"                           said "STATUS=deferred"
+check "  and the engine's RESUME_AT"                said "RESUME_AT=1793300060"
+check "  no decision"                               silent DECISION
 setup; export STUB_REVIEW="$(merged "$(pre CONFIRMED p1)")" STUB_AUTOFIX_OUT_trunk="$DEFERRED" STUB_AUTOFIX_RC_trunk=75; run 7
 check "the trunk lane deferred too: exits 75"        rc_is 75
 check "  no verdict without its fix"                silent DECISION
@@ -413,7 +423,7 @@ check "a decision in both stores: refused"         rc_is 1
 check "  says why"                                 says "both"
 check "  posts nothing"                            [ "$(posts)" = 0 ]
 
-setup; unset OLLAMA_API_KEY; run 7; run 7 --ship
+setup; unset OLLAMA_API_KEY PEER_REVIEW_ENGINE; run 7; run 7 --ship
 check "ships from the store the review used"       said "STATUS=approved:$URL"
 
 setup; author carol; export STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")"; run 7; run 7 --ship
@@ -434,7 +444,7 @@ echo "store layout, config file, PR references"
 home_run() { ( unset PR_REVIEW_DIR PR_REVIEW_INTENSE_DIR; HOME="$C/home"; export HOME; run "$@" ); }
 setup; home_run 7
 check "the intense store defaults to ~/.reviews/_intense/<author>/<repo>/<N>" decided "$C/home/.reviews/_intense/alice/widgets/7" approve
-setup; export STUB_PRVIEW="$(prview alice false OPEN false)" STUB_CURL_CODE=401; home_run 7
+setup; export STUB_PRVIEW="$(prview alice false OPEN false)" STUB_CURL_CODE=401; PEER_REVIEW_ENGINE=regular home_run 7
 check "the regular store defaults to ~/.reviews/<author>/<repo>/<N>" decided "$C/home/.reviews/alice/widgets/7" approve
 setup; home_run 7; home_run 7 --ship
 check "ship finds a decision in the default store"  said "STATUS=approved:$URL"

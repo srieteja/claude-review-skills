@@ -1,6 +1,6 @@
 ---
 name: peer-review
-description: Adversarial review of a teammate's GitHub PR that ends in exactly one of three decisions — approve, a companion fix PR stacked on theirs (only for authors on PR_REVIEW_FIX_AUTHORS, none by default), or request changes. Uses intense-review when it can refute from a third model family, the regular pr-review otherwise. Two steps with a human check in between — prepare (review, decide, freeze) and ship (post exactly what was frozen). Use when the user says "/peer-review <number>" or asks to review, approve, or fix a PR for its author.
+description: Adversarial review of a teammate's GitHub PR that ends in exactly one of three decisions — approve, a companion fix PR stacked on theirs (only for authors on PR_REVIEW_FIX_AUTHORS, none by default), or request changes. Regular pr-review by default; intense-review only when asked (`--intense`), and then it fails rather than falling back if its third-family refuter isn't ready. Two steps with a human check in between — prepare (review, decide, freeze) and ship (post exactly what was frozen). Use when the user says "/peer-review <number>" or asks to review, approve, or fix a PR for its author.
 ---
 
 # Peer review
@@ -12,9 +12,10 @@ the wrapper adds.
 
 ```mermaid
 flowchart LR
-  A[preflight] -->|open, human, not yours, same repo| P{intense refuter of a<br/>third family, reachable?}
-  P -->|yes| I[intense-review]
-  P -->|no| R[pr-review, own models]
+  A[preflight] -->|open, human, not yours, same repo| P{--intense asked?}
+  P -->|yes, refuter ready| I[intense-review]
+  P -->|yes, not ready| X2[exit 1, nothing reviewed]
+  P -->|no, the default| R[pr-review, own models]
   I --> V{every finding checked?<br/>every slice read?}
   R --> V
   V -->|no| X[exit 1, nothing decided]
@@ -39,17 +40,18 @@ flowchart LR
 
 | var | effect |
 |---|---|
-| `OLLAMA_API_KEY` | absent, with the intense refuter on ollama: no probe, the regular review runs |
+| `PEER_REVIEW_ENGINE` | `regular` (default) or `intense`; `--intense` on the command line is the same as `intense` and wins over `regular` |
+| `OLLAMA_API_KEY` | absent, with the intense refuter on ollama and intense asked for: the run fails (regular never probes) |
 | `PR_REVIEW_FIX_AUTHORS` (alias `PEER_REVIEW_FIX_AUTHORS`) | who gets a fix PR instead of a change request. Default none; space- or comma-separated, case-insensitive; empty for none. The engine runs with `--no-fix`: the fix PR opens only on `--ship` |
 | `AUTOFIX_LINT=1` | adds the lint lane: `LANE=lint`, frozen in `autofix/lint/`, a fix PR clearing `dart analyze` issues on the PR's base in the packages it touches (`AUTOFIX_LINT_LEVEL`, see pr-review). Off by default |
-| `PR_REVIEW_INTENSE_REFUTER` | the intense refuter (default: resolved, as `/intense-review` does). On ollama it is probed; of a finder's own family, the regular review runs |
+| `PR_REVIEW_INTENSE_REFUTER` | the intense refuter (default: resolved, as `/intense-review` does). Probed only when intense is asked for. On ollama it is probed; of a finder's own family, or unanswered, an asked-for intense run fails |
 | `PR_REVIEW_INTENSE_DIR`, `PR_REVIEW_DIR` | the two stores (default `~/.reviews/_intense`, `~/.reviews`) |
 
 - **Refused before any spend:** a bot author, your own PR, a PR closed unmerged, `--post`/`--inline`/`--yes` (ship posts), `--sha` (the decision is about the live head).
 
 ## Before you run it, tell the user
 
-- **The engine is picked before any spend**, printed as `ENGINE=intense|regular`: intense when its resolved refuter is of a family no finder is from and, on ollama, answers a 1-token call. On intense, intense-review's warning applies: cost is uncapped, and the diff and claims may go to ollama.com. The regular review resolves its own models; `PR_REVIEW_FINDERS` / `PR_REVIEW_REFUTER` pins are not passed to it.
+- **The engine is picked before any spend**, printed as `ENGINE=intense|regular`: regular by default; intense only when asked (`--intense`), and then only if its resolved refuter is of a family no finder is from and, on ollama, answers a 1-token call -- otherwise the run exits 1 with nothing reviewed. On intense, intense-review's warning applies: cost is uncapped, and the diff and claims may go to ollama.com. The regular review resolves its own models; `PR_REVIEW_FINDERS` / `PR_REVIEW_REFUTER` pins are not passed to it.
 - **For a fix author, a CONFIRMED finding means `claude -p` writes code** from LLM findings about someone else's PR, and prepare runs it (accept-edits, with `dart test`/`pub get`/`analyze` as its only shell, in a throwaway clone, then `dart pub get && dart test`, or `dart analyze` for a live-rig pack under `tests/`) before anyone reads it. `AUTOFIX_MODEL` picks the model (default `claude-opus-5-5`), and prepare prints it as `IMPLEMENTER=`. The gate is Dart-only: a patch touching `.github/` or a file outside every package is refused, and the decision falls back to request-changes.
 
 **Implementers.** `AUTOFIX_IMPLEMENTERS` (default `claude ollama`) is tried in order: one whose account is rate-limited hands the task to the next, and `ollama` needs `OLLAMA_API_KEY` and runs `AUTOFIX_OLLAMA_MODEL`. Only when every one is limited does prepare defer (exit 75). `RESUME_AT` is the rejected window's reset plus 60s, or `AUTOFIX_DEFER_FALLBACK` seconds (default 18000) from now when the limit names none.

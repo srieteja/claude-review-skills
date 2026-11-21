@@ -127,7 +127,7 @@ If you build on top of these skills, for example a scheduler or a dashboard, wra
 
   A run in which the anthropic finder produced nothing can request changes, but it cannot approve.
 - **Fix PRs.** Fix PRs are opened only for authors listed in `PR_REVIEW_FIX_AUTHORS`, which is empty by default. For everyone else, confirmed findings become a request for changes.
-- **Engine.** peer-review runs `intense-review` when a third-family refuter is reachable, and the regular `pr-review` otherwise.
+- **Engine.** peer-review runs the regular `pr-review` by default. It runs `intense-review` only when asked (`--intense` or `PEER_REVIEW_ENGINE=intense`), and then fails rather than fall back if its third-family refuter isn't ready.
 
 ## Repo knobs
 
