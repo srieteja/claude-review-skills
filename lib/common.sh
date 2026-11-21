@@ -34,7 +34,7 @@ load_config() {
     line="${line#export }"
     case "$line" in
       PR_REVIEW_*=*|PEER_REVIEW_*=*|OLLAMA_*=*|AGY_DO_*=*|AUTOFIX_MODEL=*|AUTOFIX_EFFORT=*|AUTOFIX_BUDGET=*) ;;
-      ANTHROPIC_API_KEY=*|ANTHROPIC_USE_API_KEY=*|REVIEW_SKILLS_MODELS=*) ;;
+      ANTHROPIC_API_KEY=*|ANTHROPIC_USE_API_KEY=*|REVIEW_SKILLS_MODELS=*|REVIEW_CLAUDE_CONFIG_DIR=*) ;;
       *) continue ;;
     esac
     key="${line%%=*}"; val="${line#*=}"

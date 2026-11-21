@@ -6,7 +6,8 @@
 # none, since agy signs in on its own. Every other key, and every endpoint override, is
 # stripped, so no review prompt reaches a provider on a key meant for another.
 #
-# Reads $MODEL, $OLLAMA_API_KEY, $ANTHROPIC_API_KEY and $ANTHROPIC_USE_API_KEY at call time.
+# Reads $MODEL, $OLLAMA_API_KEY, $ANTHROPIC_API_KEY, $ANTHROPIC_USE_API_KEY and
+# $REVIEW_CLAUDE_CONFIG_DIR at call time.
 #
 # CLAUDE_CODE_SIMPLE=1 is load-bearing, not cosmetic: without it, a nested `claude` with an
 # active OAuth login prefers the Keychain-stored "Claude Code-credentials" session over
@@ -94,13 +95,24 @@ anthropic_key_check() {
   [ "${ANTHROPIC_USE_API_KEY:-}" != 1 ] || [ -n "${ANTHROPIC_API_KEY:-}" ] || {
     printf 'review-skills: ANTHROPIC_USE_API_KEY=1 but ANTHROPIC_API_KEY is empty\n' >&2; return 1; }
 }
+# REVIEW_CLAUDE_CONFIG_DIR (subscription path only) points claude at a separate login: it is
+# exported as CLAUDE_CONFIG_DIR, a leading ~/ expanded. Unset or empty leaves the environment alone.
 anthropic_env() {
-  local key=""
+  local key="" cfgdir=""
   anthropic_key_check || return 1
-  [ "${ANTHROPIC_USE_API_KEY:-}" != 1 ] || key="$ANTHROPIC_API_KEY"
+  if [ "${ANTHROPIC_USE_API_KEY:-}" = 1 ]; then
+    key="$ANTHROPIC_API_KEY"
+  elif [ -n "${REVIEW_CLAUDE_CONFIG_DIR:-}" ]; then
+    cfgdir="$REVIEW_CLAUDE_CONFIG_DIR"
+    case "$cfgdir" in "~") cfgdir="$HOME" ;; "~/"*) cfgdir="$HOME/${cfgdir#"~/"}" ;; esac
+    [ -d "$cfgdir" ] || {
+      printf 'review-skills: REVIEW_CLAUDE_CONFIG_DIR %s does not exist -- run: CLAUDE_CONFIG_DIR=%s claude auth login\n' \
+        "$cfgdir" "$cfgdir" >&2; return 1; }
+  fi
   _strip_args CLAUDE_CODE_OAUTH_TOKEN
   env "${_STRIP[@]}" \
       ${key:+"ANTHROPIC_API_KEY=$key"} \
+      ${cfgdir:+"CLAUDE_CONFIG_DIR=$cfgdir"} \
       "$@"
 }
 

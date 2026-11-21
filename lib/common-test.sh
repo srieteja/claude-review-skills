@@ -140,6 +140,34 @@ check "junk is refused" is 'parse_pr_ref 7x && echo yes || echo no' no
 check "an issue URL is refused" is 'parse_pr_ref https://github.com/acme/widgets/issues/7 && echo yes || echo no' no
 check "owner/repo with no number is refused" is 'parse_pr_ref acme/widgets# && echo yes || echo no' no
 
+echo "claude config dir"
+mkdir -p "$SB/home/acct2" "$SB/home/.claude-x"
+cdir='echo "${CLAUDE_CONFIG_DIR:-unset}"'
+EXTRA=()
+check "unset: CLAUDE_CONFIG_DIR is untouched" is "anthropic_env bash -c '$cdir'" unset
+EXTRA=(CLAUDE_CONFIG_DIR=/keep)
+check "unset: a caller's CLAUDE_CONFIG_DIR passes through" is "anthropic_env bash -c '$cdir'" /keep
+EXTRA=(REVIEW_CLAUDE_CONFIG_DIR=)
+check "empty: behaves as unset" is "anthropic_env bash -c '$cdir'" unset
+EXTRA=(REVIEW_CLAUDE_CONFIG_DIR="$SB/home/acct2" CLAUDE_CONFIG_DIR=/keep)
+check "set + exists: exported, beating the caller's" is "anthropic_env bash -c '$cdir'" "$SB/home/acct2"
+EXTRA=(REVIEW_CLAUDE_CONFIG_DIR="~/acct2")
+check "a leading ~/ is expanded" is "anthropic_env bash -c '$cdir'" "$SB/home/acct2"
+EXTRA=(REVIEW_CLAUDE_CONFIG_DIR="$SB/home/nope")
+check "missing dir: nonzero" is 'anthropic_env true 2>/dev/null; echo rc=$?' rc=1
+check "missing dir: message carries the login hint" \
+  is 'anthropic_env true 2>&1 | grep -c "CLAUDE_CONFIG_DIR='"$SB"'/home/nope claude auth login"' 1
+EXTRA=(REVIEW_CLAUDE_CONFIG_DIR="$SB/home/nope" ANTHROPIC_USE_API_KEY=1 ANTHROPIC_API_KEY=k)
+check "API-key mode ignores it (even a missing dir)" is "anthropic_env bash -c '$cdir'" unset
+EXTRA=(ANTHROPIC_USE_API_KEY=1 ANTHROPIC_API_KEY=k REVIEW_CLAUDE_CONFIG_DIR="$SB/home/acct2")
+check "API-key mode does not export it" is "anthropic_env bash -c '$cdir'" unset
+CFG="$SB/cd.env"
+printf 'REVIEW_CLAUDE_CONFIG_DIR=~/acct2\n' > "$CFG"; chmod 600 "$CFG"
+EXTRA=()
+check "config.env supplies the key (~ expanded) and anthropic_env exports it" \
+  is "load_config; anthropic_env bash -c '$cdir'" "$SB/home/acct2"
+CFG=""
+
 echo "effort cap"
 eff() { is "clamp_effort '$1' 2>/dev/null" "$2"; }
 check "low stays low" eff low low

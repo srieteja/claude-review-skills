@@ -41,7 +41,7 @@ With only `claude` signed in, Opus finds and Opus refutes a regular review (Sonn
 
 | Backend | How to enable | Model family | Needed? |
 |---|---|---|---|
-| anthropic | `claude auth login` (subscription), or `ANTHROPIC_USE_API_KEY=1` + `ANTHROPIC_API_KEY` | Claude | the usual start |
+| anthropic | `claude auth login` (subscription), or `ANTHROPIC_USE_API_KEY=1` + `ANTHROPIC_API_KEY` | Claude | the usual start; `REVIEW_CLAUDE_CONFIG_DIR=<dir>` in config.env runs it under a separate login (`CLAUDE_CONFIG_DIR=<dir> claude auth login` first) |
 | agy | sign in to antigravity; it takes no key | Gemini | optional: a different-family refuter |
 | ollama | `OLLAMA_API_KEY` | glm, kimi, … | optional: a different-family refuter |
 
