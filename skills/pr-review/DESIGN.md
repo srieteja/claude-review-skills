@@ -161,6 +161,10 @@ The ollama refuter did read the pinned tree. TRUE_CLAIM is false in the live tre
 backends this machine reaches — claude signed in, agy signed in, an `OLLAMA_API_KEY` that
 ollama.com accepts on a 1-token call (its `/v1/models` answers anyone).
 
+- The `gate` preset (`lib/models.tsv`, role `gate`: ollama deepseek-v4.1-flash, then claude
+  opus-5-5@medium, then gemini-api gemini-3.8-flash) is not a review. `resolve_models` rejects
+  it as an unknown preset and nothing here probes it; a caller that wants a gate reviewer reads
+  its rows best-first (`_rows gate gate`) and takes the first it can reach.
 - Refuter independence beats a second finder: the refuter is taken from a family no finder is
   from, and an intense second finder that would leave no such refuter is dropped.
 - When only one family is reachable the review still runs; the report flags the refuter as

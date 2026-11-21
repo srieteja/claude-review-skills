@@ -186,5 +186,10 @@ check "gemma over ollama is google too" fam ollama:gemma4:27b google
 check "anything else is its name's first word" fam ollama:glm-5.3-flash glm
 check "  with a tag dropped" fam ollama:gpt-oss:120b gpt
 
+echo "the gate preset"
+gate_rows() { env -i PATH="$PATH" HOME=/h bash -c '. "$1"; _rows gate gate | tr "\n" " "' _ "$HERE/common.sh"; }
+check "gate rows, best first: ollama, then claude opus@medium, then gemini-api" \
+  test "$(gate_rows)" = "ollama:deepseek-v4.1-flash anthropic:claude-opus-5-5@medium gemini-api:gemini-3.8-flash "
+
 [ "$fail" -eq 0 ] && printf '\n\033[32mall models checks passed\033[0m\n' || printf '\n\033[31mmodels checks FAILED\033[0m\n'
 exit $fail

@@ -2,6 +2,8 @@
 # first reachable row; a regular review has one finder, an intense one the best per transport,
 # at most two. The refuter is the best reachable row of a family no finder is from; a second
 # finder that would leave no such refuter is dropped.
+# The gate preset (role gate) is not resolved here: a caller reads its rows best-first
+# (_rows gate gate) and takes the first it can reach.
 regular	finder	anthropic:claude-opus-5-5@medium
 regular	finder	ollama:deepseek-v4.1-flash
 regular	finder	agy:gemini-3.8-flash-high
@@ -16,3 +18,6 @@ intense	finder	ollama:glm-5.3
 intense	refuter	agy:gemini-3.8-flash-high
 intense	refuter	ollama:glm-5.3-flash
 intense	refuter	anthropic:claude-sonnet-5-5
+gate	gate	ollama:deepseek-v4.1-flash
+gate	gate	anthropic:claude-opus-5-5@medium
+gate	gate	gemini-api:gemini-3.8-flash
