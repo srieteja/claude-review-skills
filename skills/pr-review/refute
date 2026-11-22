@@ -7,7 +7,7 @@
 #
 #   refute --findings f.json --tree <dir> --root <repo> [--work <dir>] [--jobs N]
 #          [--transport agy|anthropic|ollama] [--model <id>] [--cross]
-#          [--burden strict|evidence]
+#          [--burden strict|evidence] [--doctrine <file>]
 #
 # Reads   <findings.json>  {"findings":[{"id","file","line","claim","mechanism","repro"}]}
 # Writes  <work>/verdicts/<id>.json  {"id","verdict","evidence","reason","model"}, one per
@@ -31,6 +31,7 @@ MODEL=""
 CHAIN_IN="${PR_REVIEW_REFUTER_CHAIN:-}"
 BURDEN=strict
 CROSS=0
+DOCTRINE_ARG=""
 # PR_REVIEW_AGY_TIMEOUT is the deprecated name of PR_REVIEW_REFUTE_TIMEOUT.
 refute_defaults; TIMEOUT="$REFUTE_TIMEOUT"; JOBS="$REFUTE_JOBS"
 # 0 would mean no ceiling to timeout(1) and no job slot: refuse both before any call is made.
@@ -39,6 +40,7 @@ require_posint PR_REVIEW_JOBS "$JOBS" || exit 1
 FINDINGS=""; TREE=""; ROOT=""; WORK=""
 
 die() { printf '\033[31mrefute: %s\033[0m\n' "$*" >&2; exit 1; }
+argerror() { die "argument error: $*"; }
 say() { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
 
@@ -62,14 +64,16 @@ usage: refute --findings <file> --tree <dir> --root <repo> [options]
                       an anthropic.* finding goes to gemini-*, an agy.* finding to claude-*
   --burden <b>        strict (default): unverifiable is REFUTED
                       evidence: REFUTED needs quoted counter-evidence, else UNVERIFIABLE
+  --doctrine <file>   SOUL.md doctrine (default: \$REVIEW_SOUL, else \$HOME/.reviews/SOUL.md)
+                      only Evidence standard, Severity and Checks reach the prompt
   --timeout <dur>     per-call ceiling (default $TIMEOUT); a call that hits it is retried like any failure
   -h, --help          this
 
 Claims with the same file, claim text and finder family, and lines within 3 of an earlier
 claim's, are checked once; the duplicates take that claim's verdict.
 
-env: PR_REVIEW_GEMINI_MODEL PR_REVIEW_REFUTER_FALLBACK PR_REVIEW_REFUTE_TIMEOUT PR_REVIEW_JOBS
-     PR_REVIEW_AGY_TIMEOUT (deprecated: the old name of PR_REVIEW_REFUTE_TIMEOUT)
+env: REVIEW_SOUL PR_REVIEW_GEMINI_MODEL PR_REVIEW_REFUTER_FALLBACK PR_REVIEW_REFUTE_TIMEOUT
+     PR_REVIEW_JOBS PR_REVIEW_AGY_TIMEOUT (deprecated: the old name of PR_REVIEW_REFUTE_TIMEOUT)
      OLLAMA_API_KEY
 USAGE
   exit 1
@@ -90,6 +94,7 @@ while [ $# -gt 0 ]; do
     --chain) need_value "$@"; CHAIN_IN="$2"; shift ;;
     --cross) CROSS=1 ;;
     --burden) need_value "$@"; BURDEN="$2"; shift ;;
+    --doctrine) need_value "$@"; DOCTRINE_ARG="$2"; shift ;;
     --timeout) need_value "$@"; require_duration --timeout "${2:-}" || exit 1; TIMEOUT="$2"; shift ;;
     -h|--help) usage ;;
     *) die "unknown option: $1" ;;
@@ -98,9 +103,23 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$FINDINGS" ] && [ -n "$TREE" ] && [ -n "$ROOT" ] || usage
-[ -s "$FINDINGS" ] || die "no findings at $FINDINGS"
-[ -d "$TREE" ] || die "--tree is not a directory: $TREE"
+
+# Input arguments are checked before the doctrine is resolved: a bad invocation is an
+# argument error, not a missing-doctrine error. The doctrine is still read here, before
+# any model call, so a missing or unreadable SOUL.md fails closed instead of spending a
+# finder's budget first. Only the three sections the refuter acts on are loaded --
+# Delivery and Response protocol must never reach its prompt.
+[ -f "$FINDINGS" ] && [ -s "$FINDINGS" ] \
+  || argerror "--findings is not a non-empty file: $FINDINGS"
+[ -d "$TREE" ] || argerror "--tree is not a directory: $TREE"
 TREE="$(cd "$TREE" && pwd -P)"
+
+DOCTRINE="${DOCTRINE_ARG:-${REVIEW_SOUL:-${HOME:-}/.reviews/SOUL.md}}"
+[ -r "$DOCTRINE" ] || die "no readable doctrine at $DOCTRINE -- pass --doctrine <file>, set REVIEW_SOUL, or create it"
+command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH; it reads the doctrine"
+DOCTRINE_TEXT="$(python3 "$HERE/../../lib/soul.py" sections "$DOCTRINE" \
+  --only "Evidence standard,Severity,Checks" 2>/dev/null)" \
+  || die "cannot read Evidence standard, Severity and Checks from $DOCTRINE -- run: python3 lib/soul.py parse $DOCTRINE"
 # --root is required rather than defaulted: the validator may resolve a workspace outside
 # --tree, and the guard below has to know which repo to watch.
 git -C "$ROOT" rev-parse --show-toplevel >/dev/null 2>&1 \
@@ -181,6 +200,14 @@ B="$HERE/burden/$BURDEN"
 sed -e "/__INTRO__/r $B/intro.txt" -e "/__INTRO__/d" \
     -e "/__VERDICTS__/r $B/verdicts.txt" -e "/__VERDICTS__/d" \
     "$HERE/refute.prompt" > "$WORK/refute.prompt"
+# The doctrine was read above; insert it verbatim at __DOCTRINE__. awk (not sed) so an
+# arbitrary rule body cannot be read as a sed command.
+printf '%s\n' "$DOCTRINE_TEXT" > "$WORK/doctrine.md"
+awk -v doctrine="$WORK/doctrine.md" '
+  $0 == "__DOCTRINE__" { while ((getline line < doctrine) > 0) print line; close(doctrine); next }
+  { print }
+' "$WORK/refute.prompt" > "$WORK/refute.prompt.doctrine"
+mv "$WORK/refute.prompt.doctrine" "$WORK/refute.prompt"
 jq --rawfile d "$B/verdict.desc.txt" '.properties.verdict.description = ($d | rtrimstr("\n"))' \
   "$HERE/verdict.schema.json" > "$WORK/verdict.schema.json"
 # agy takes --json-schema as a path; claude takes it inline.
@@ -265,8 +292,13 @@ ask_validator() { # id attempt entry
   if [ "$rc" -eq 0 ]; then
     # agy: a bare object. claude: a transcript array.
     # .model: burden calibration is per model, so a verdict says which one judged it.
+    # Normalise the verdict: pin the id and model, and carry `lens` through when the
+    # model supplied one. A missing lens stays valid (older verdicts had none); a
+    # non-string lens is dropped rather than stored.
     jq -c -L "$HERE" --arg id "$id" --arg m "$m" \
-      'include "last-event"; last_event | .structured_output // empty | .id = $id | .model = $m' \
+      'include "last-event"; last_event | .structured_output // empty
+       | .id = $id | .model = $m
+       | if (.lens? | type) == "string" then . else del(.lens) end' \
       "$WORK/claims/$id.raw.$attempt" > "$WORK/verdicts/$id.json" 2>/dev/null || true
   fi
   [ -s "$WORK/verdicts/$id.json" ]

@@ -23,6 +23,11 @@
     "correction": {
       "type": "string",
       "description": "Optional. If the claim is directionally right but wrong in detail (wrong line, wrong trigger, wrong severity), the corrected statement."
+    },
+    "lens": {
+      "type": "string",
+      "enum": ["docs", "test-bite", "api", "topology", "scenario", "title", "scope", "evidence"],
+      "description": "Optional. The doctrine check that decided the verdict. Older verdicts without it stay valid."
     }
   }
 }

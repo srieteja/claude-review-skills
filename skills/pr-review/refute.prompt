@@ -6,6 +6,18 @@ __INTRO__
 
 __CLAIM__
 
+## Doctrine
+
+The review doctrine below is the standard this claim is judged by. Apply it; never quote it
+back as evidence.
+
+__DOCTRINE__
+
+Record the check that decided the verdict in `lens`: exactly one of `docs`, `test-bite`,
+`api`, `topology`, `scenario`, `title`, `scope`, `evidence`. Put the source you actually
+opened and quoted in `evidence`, each line prefixed `path:line`; a mutation result goes there
+with the command and its output. A claim no one can check is UNVERIFIABLE, never a quiet pass.
+
 ## The source
 
 The repository at your working directory is checked out at the pull request's head commit.

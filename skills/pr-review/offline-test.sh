@@ -26,6 +26,56 @@ export STUB_LOG="$SANDBOX/log"
 export REVIEW_SKILLS_LOCK_DIR="$SANDBOX/locks"
 # Every preset takes its first models.tsv rows; lib/models-test.sh covers auto resolution.
 export REVIEW_SKILLS_MODELS=manual REVIEW_SKILLS_CACHE="$SANDBOX/models-cache"
+# The refuter reads its doctrine before any model call. Keep it in the sandbox: the test
+# must never depend on (or read) the real ~/.reviews/SOUL.md.
+cat > "$SANDBOX/SOUL.md" <<'SOUL'
+# Offline fixture doctrine
+
+## Purpose — immutable core
+
+Keep the review cheap and the finding checkable.
+
+## Evidence standard — immutable core
+
+A finding needs an anchor and an evidence class.
+- **S-E1** Quote the source you opened. — evidence: 1 · 2026-11-22
+
+## Severity
+
+Must / Should / Nit.
+- **S-V1** Severity comes from harm. — evidence: 1 · 2026-11-22
+
+## Checks — review in this order
+
+Docs drift, test bite, API surface, topology, scenario, title, scope.
+- **S-C1** Docs drift is a finding. — evidence: 1 · 2026-11-22
+
+## Delivery
+
+Prefer a suggestion when the fix replaces the anchored lines.
+- **S-D1** Prefer a suggestion. — owner ruling 2026-11-22
+
+## Review shape
+
+One finding per row.
+- **S-R1** Discrete rows.
+
+## Response protocol
+
+Reply point by point after the push.
+- **S-P1** Reply after the push.
+
+## Closure
+
+Record the outcome.
+- **S-X1** Record the outcome.
+
+## Learning
+
+Ten observations before a change.
+- **S-L1** Ten observations before a change.
+SOUL
+export REVIEW_SOUL="$SANDBOX/SOUL.md"
 REPORT="$PR_REVIEW_DIR/$AUTHOR/widgets/$PIN_PR/pr${PIN_PR}-review.md"
 BRIEF="$PR_REVIEW_DIR/$AUTHOR/widgets/$PIN_PR/pr${PIN_PR}-explainer.md"
 INLINE="$PR_REVIEW_DIR/$AUTHOR/widgets/$PIN_PR/inline.json"

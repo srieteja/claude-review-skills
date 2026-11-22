@@ -36,7 +36,10 @@ if [ "${STUB_FAIL:-0}" = 1 ]; then
   echo '{"status":"ERROR","response":"hit a 429 earlier"}'; exit 1
 fi
 id="$(printf '%s' "$p" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
-printf '{"structured_output":{"id":"%s","verdict":"REFUTED","evidence":"a.dart:1","reason":"stub"}}\n' "$id"
+v="${STUB_VERDICT:-REFUTED}"
+ev="${STUB_EVIDENCE:-a.dart:1}"
+lens=""; [ -z "${STUB_LENS:-}" ] || lens=",\"lens\":\"${STUB_LENS}\""
+printf '{"structured_output":{"id":"%s","verdict":"%s","evidence":"%s"%s,"reason":"stub"}}\n' "$id" "$v" "$ev" "$lens"
 STUB
 chmod +x "$SB/bin/agy"
 
@@ -66,7 +69,61 @@ STUB
 chmod +x "$SB/bin/claude"
 export OLLAMA_API_KEY=stub
 export PATH="$SB/bin:$PATH" REVIEW_SKILLS_CONFIG="$SB/no-config"
-unset PR_REVIEW_REFUTER_FALLBACK STUB_CLAUDE_QUOTA_MODELS STUB_QUOTA_MODELS STUB_FAIL STUB_CLAUDE_STATUS STUB_CLAUDE_RESULT
+unset PR_REVIEW_REFUTER_FALLBACK STUB_CLAUDE_QUOTA_MODELS STUB_QUOTA_MODELS STUB_FAIL STUB_CLAUDE_STATUS STUB_CLAUDE_RESULT STUB_VERDICT STUB_LENS STUB_EVIDENCE
+
+# A fixture doctrine: every required section, with a distinct marker in each body. The
+# refuter may inject only Evidence standard, Severity and Checks -- the markers make a
+# leaked Delivery or Response protocol body unmistakable. REVIEW_SOUL keeps every run off
+# the real ~/.reviews.
+DOCTRINE="$SB/doctrine.md"
+cat > "$DOCTRINE" <<'SOUL'
+# Fixture doctrine -- distinct markers prove which sections reach the prompt.
+
+## Purpose — immutable core
+
+DOCTRINE-PURPOSE: keep the review cheap.
+
+## Evidence standard — immutable core
+
+DOCTRINE-EVIDENCE: a finding needs an anchor and an evidence class.
+- **S-E1** Quote the source you opened. — evidence: 1 · 2026-11-22
+
+## Severity
+
+DOCTRINE-SEVERITY: Must / Should / Nit.
+- **S-V1** Severity comes from harm. — evidence: 1 · 2026-11-22
+
+## Checks — review in this order
+
+DOCTRINE-CHECKS: docs drift, test bite, API, topology, scenario, title, scope.
+- **S-C1** Docs drift is a finding. — evidence: 1 · 2026-11-22
+
+## Delivery
+
+DOCTRINE-DELIVERY: prefer a suggestion.
+- **S-D1** Prefer a suggestion. — owner ruling 2026-11-22
+
+## Review shape
+
+DOCTRINE-SHAPE: one finding per row.
+- **S-R1** Discrete rows.
+
+## Response protocol
+
+DOCTRINE-RESPONSE: reply point by point after the push.
+- **S-P1** Reply after the push.
+
+## Closure
+
+DOCTRINE-CLOSURE: record the outcome.
+- **S-X1** Record the outcome.
+
+## Learning
+
+DOCTRINE-LEARNING: ten observations before a change.
+- **S-L1** Ten observations before a change.
+SOUL
+export REVIEW_SOUL="$DOCTRINE"
 
 # claim text is per-id, so refute's duplicate-claim merge never fires unless a test asks for it.
 claim() { # id file line text
@@ -117,6 +174,39 @@ for ok in 90 30s 2h; do
   PR_REVIEW_REFUTE_TIMEOUT="$ok" run --model m1
   check "a timeout of $ok is accepted" [ "$RC" -eq 0 ]
 done
+
+echo "argument errors are reported before the doctrine is resolved"
+MISSING_DOCTRINE="$SB/no-such-doctrine.md"
+: > "$SB/empty.json"
+claims F1 > "$SB/f.json"
+arg_run() { # args...
+  : > "$SB/calls"; : > "$SB/out"
+  STUB_CALLS="$SB/calls" "$HERE/refute" "$@" > "$SB/out" 2>&1
+  RC=$?
+}
+arg_run --findings "$SB/empty.json" --tree "$SB/repo" --root "$SB/repo" \
+  --doctrine "$MISSING_DOCTRINE" --work "$SB/warg1" --model m1
+check "an empty --findings is refused before a missing doctrine" [ "$RC" -ne 0 ]
+check "  naming the findings argument"              grep -qi "findings" "$SB/out"
+check "  not the doctrine"                          bash -c '! grep -qi doctrine "$1"' _ "$SB/out"
+check "  and no validator ran"                      [ ! -s "$SB/calls" ]
+arg_run --findings "$SB/no-such-findings.json" --tree "$SB/repo" --root "$SB/repo" \
+  --doctrine "$MISSING_DOCTRINE" --work "$SB/warg2" --model m1
+check "a missing --findings file is refused before a missing doctrine" [ "$RC" -ne 0 ]
+check "  naming the findings argument"              grep -qi "findings" "$SB/out"
+check "  not the doctrine"                          bash -c '! grep -qi doctrine "$1"' _ "$SB/out"
+check "  and no validator ran"                      [ ! -s "$SB/calls" ]
+arg_run --findings "$SB/f.json" --tree "$SB/not-a-dir" --root "$SB/repo" \
+  --doctrine "$MISSING_DOCTRINE" --work "$SB/warg3" --model m1
+check "a non-directory --tree is refused before a missing doctrine" [ "$RC" -ne 0 ]
+check "  naming the tree argument"                  grep -q -- "--tree" "$SB/out"
+check "  not the doctrine"                          bash -c '! grep -qi doctrine "$1"' _ "$SB/out"
+check "  and no validator ran"                      [ ! -s "$SB/calls" ]
+arg_run --findings "$SB/f.json" --tree "$SB/repo" --root "$SB/repo" \
+  --doctrine "$MISSING_DOCTRINE" --work "$SB/warg4" --model m1
+check "valid arguments, missing doctrine: still a doctrine error" [ "$RC" -ne 0 ]
+check "  naming the doctrine"                       grep -qi "doctrine" "$SB/out"
+check "  and no validator ran"                      [ ! -s "$SB/calls" ]
 
 echo "finding ids are file names"
 claims '../../x' > "$SB/f.json"
@@ -354,6 +444,46 @@ for bad in "agy:" ":m" "agy" "bogus:m" "agy:g1 ollama:" "agy:g1 :m"; do
   check "chain entry set '$bad' is refused before any call" refused "refuter chain entry"
   check "  and no call was made" [ -z "$(calls)" ]
 done
+# Scenario: The refuter is given only the doctrine it acts on
+echo "The refuter is given only the doctrine it acts on"
+claims F1 > "$SB/f.json"
+run --doctrine "$DOCTRINE" --model m1
+P="$W/claims/F1.prompt"
+check "the prompt carries the Evidence standard section" grep -q "DOCTRINE-EVIDENCE" "$P"
+check "  and the Severity section"                  grep -q "DOCTRINE-SEVERITY" "$P"
+check "  and the Checks section"                    grep -q "DOCTRINE-CHECKS" "$P"
+check "  not the Delivery section"                  bash -c '! grep -q DOCTRINE-DELIVERY "$1"' _ "$P"
+check "  nor the Response protocol section"         bash -c '! grep -q DOCTRINE-RESPONSE "$1"' _ "$P"
+check "  the doctrine block follows the claim"      awk '/^## The claim/{c=NR} /^## Doctrine/{d=NR} END{exit !(c && d && c < d)}' "$P"
+check "  and the prompt asks for a lens"            grep -q 'Record the check that decided the verdict in `lens`' "$P"
+
+# Scenario: The refuter fails closed without a doctrine
+echo "The refuter fails closed without a doctrine"
+claims F1 > "$SB/f.json"
+run --doctrine "$SB/no-such-doctrine.md" --model m1
+check "a missing doctrine exits non-zero"           [ "$RC" -ne 0 ]
+check "  with a one-line remedy"                    grep -qi "doctrine" "$SB/out"
+check "  and the validator was never called"        [ -z "$(calls)" ]
+
+# Scenario: A verdict records the lens and the evidence
+echo "A verdict records the lens and the evidence"
+claims F1 > "$SB/f.json"
+STUB_VERDICT=CONFIRMED STUB_LENS=test-bite \
+  STUB_EVIDENCE="mutation: changed the arm to throw; suite still green" \
+  run --doctrine "$DOCTRINE" --model m1
+check "the stubbed verdict is CONFIRMED"            [ "$(verdict F1 verdict)" = CONFIRMED ]
+check "  lens survives normalisation"               [ "$(verdict F1 lens)" = test-bite ]
+check "  the mutation evidence survives"            grep -q "suite still green" "$W/verdicts/F1.json"
+claims F1 > "$SB/f.json"
+STUB_VERDICT=CONFIRMED STUB_LENS=docs \
+  STUB_EVIDENCE="README.md:3 still describes the old flag" \
+  run --doctrine "$DOCTRINE" --model m1
+check "a docs-drift citation is CONFIRMED with lens docs" [ "$(verdict F1 lens)" = docs ]
+check "  and its citation is kept"                  grep -q "README.md:3" "$W/verdicts/F1.json"
+claims F1 > "$SB/f.json"
+run --doctrine "$DOCTRINE" --model m1
+check "a verdict without lens stays valid"          [ "$(verdict F1 lens)" = null ]
+check "  and the schema does not require it"        bash -c '! jq -e ".required | index(\"lens\")" "$1" >/dev/null' _ "$HERE/verdict.schema.json"
 
 [ "$fail" = 0 ] && echo "all passed" || { echo FAILURES; cat "$SB/out"; }
 exit "$fail"
