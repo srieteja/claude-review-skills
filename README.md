@@ -30,6 +30,7 @@ git clone https://github.com/srieteja/claude-review-skills ~/src/review-skills
 ```
 
 - **Needs:** bash 3.2+, git, `gh` (signed in), jq, curl, python3, awk.
+- **Fix PRs also need:** both `dart` and `flutter` on PATH (autofix checks them before any model is paid for): the test gate runs `flutter pub get`, then `flutter test` (`dart test` for a package that does not depend on Flutter) or `dart analyze`.
 - **Recommended:** `timeout`, or `gtimeout` on macOS (`brew install coreutils`). An anthropic or ollama refuter can't run without it.
 - **Updating:** run `git pull`. The skills are symlinks, so there is nothing to reinstall.
 - **Installing elsewhere:** set `CLAUDE_SKILLS_DIR` to put the links somewhere other than `~/.claude/skills`.
@@ -49,7 +50,7 @@ With only `claude` signed in, Opus finds and Opus refutes a regular review (Sonn
 - **Precedence:** a variable set in the environment beats the file.
 - **File permissions:** keep the file at mode 600. `doctor` fails if others can read it.
 - **Allowlist:** only known keys are read from the file. Everything else in it is ignored.
-- **Template:** [`config.example.env`](config.example.env) lists every key.
+- **Template:** [`config.example.env`](config.example.env) lists the keys you would set, with their defaults; each skill's `SKILL.md` has the full table, including aliases and internal knobs the scripts set for each other. Per-run switches (`AUTOFIX_MODE`, `AUTOFIX_DRY_RUN` and the like) are set in the environment, not here.
 
 ## Models: auto or pinned
 

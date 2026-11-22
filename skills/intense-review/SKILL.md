@@ -29,7 +29,7 @@ The two stores are separate, so an intense run never overwrites a default review
 ~/.claude/skills/intense-review/intense-review.sh <PR-NUMBER> --keep
 ```
 
-- **Launch in the background** (Claude Code: `run_in_background: true`), then poll the log. With 2 finders, each slice runs twice, and max-effort Opus slices can take most of an hour.
+- **Launch in the background** (Claude Code: `run_in_background: true`), then poll the log. Each slice runs once per finder (one per transport), and a slice may run up to `PR_REVIEW_S1_TIMEOUT` (60m here), so a run can take most of an hour.
 - **Run from inside the repo under review.** `ROOT` comes from cwd.
 - **Wants `OLLAMA_API_KEY`** for its glm refuter: put it in `~/.config/review-skills/config.env` (mode 600), which every entry point reads. Without it a refuter of another reachable family is used.
 - **Any `pr-review.sh` option passes through:** `--no-cache`, `--sha`, `--findings`, `--post`, `--inline`, `--no-fix`.

@@ -35,7 +35,7 @@ flowchart LR
 ```
 
 - **Launch in the background.** In Claude Code use `run_in_background: true`. An intense review runs slices of up to 60m per finder.
-- **Run from inside the PR's repository**, outside the Claude Code sandbox (`gh` reads its token from the keychain), with `dart` on `PATH`. A fix needs `origin`, including any push URL, to be the PR's repo.
+- **Run from inside the PR's repository**, outside the Claude Code sandbox (`gh` reads its token from the keychain), with `dart` and `flutter` on `PATH` (a fix's test gate needs both). A fix needs `origin`, including any push URL, to be the PR's repo.
 - **Env:**
 
 | var | effect |
@@ -52,7 +52,7 @@ flowchart LR
 ## Before you run it, tell the user
 
 - **The engine is picked before any spend**, printed as `ENGINE=intense|regular`: regular by default; intense only when asked (`--intense`), and then only if its resolved refuter is of a family no finder is from and, on ollama, answers a 1-token call -- otherwise the run exits 1 with nothing reviewed. On intense, intense-review's warning applies: cost is uncapped, and the diff and claims may go to ollama.com. The regular review resolves its own models; `PR_REVIEW_FINDERS` / `PR_REVIEW_REFUTER` pins are not passed to it.
-- **For a fix author, a CONFIRMED finding means `claude -p` writes code** from LLM findings about someone else's PR, and prepare runs it (accept-edits, with `dart test`/`pub get`/`analyze` as its only shell, in a throwaway clone, then `dart pub get && dart test`, or `dart analyze` for a live-rig pack under `tests/`) before anyone reads it. `AUTOFIX_MODEL` picks the model (default `claude-opus-5-5`), and prepare prints it as `IMPLEMENTER=`. The gate is Dart-only: a patch touching `.github/` or a file outside every package is refused, and the decision falls back to request-changes.
+- **For a fix author, a CONFIRMED finding means an implementer (`claude -p`, or ollama when claude is limited) writes code** from LLM findings about someone else's PR, and prepare runs it (accept-edits, with `dart`/`flutter` `test`, `pub get` and `dart analyze` as its only shell, in a throwaway clone, then `flutter pub get && flutter test`, or `dart test` for a package that does not use Flutter, or `dart analyze` for a live-rig pack under `tests/`) before anyone reads it. `AUTOFIX_MODEL` picks the model (default `claude-opus-5-5`), and prepare prints it as `IMPLEMENTER=`. The gate is Dart-only: a patch touching `.github/` or a file outside every package is refused, and the decision falls back to request-changes.
 
 **Implementers.** `AUTOFIX_IMPLEMENTERS` (default `claude ollama`) is tried in order: one whose account is rate-limited hands the task to the next, and `ollama` needs `OLLAMA_API_KEY` and runs `AUTOFIX_OLLAMA_MODEL`. Only when every one is limited does prepare defer (exit 75). `RESUME_AT` is the rejected window's reset plus 60s, or `AUTOFIX_DEFER_FALLBACK` seconds (default 18000) from now when the limit names none.
 

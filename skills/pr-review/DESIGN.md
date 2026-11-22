@@ -149,6 +149,7 @@ The ollama refuter did read the pinned tree. TRUE_CLAIM is false in the live tre
   - A validator call is capped by `PR_REVIEW_REFUTE_TIMEOUT` (8m). A timeout is an ordinary failed call: retried like any other: two tries on the same model, then the claim is left unchecked (ERROR). The chain advances only when a link is out of quota or unavailable. `gemini-3.8-flash-medium` is the faster refuter tier; switching to it is a config decision.
   - Duplicate claims (same file, line within 3, same claim, same finder family) are validated once and the verdict copied to the rest.
   - Stage 1 starts the largest diff first, so the long slice does not start last; an ollama finder is wrapped in `PR_REVIEW_S1_TIMEOUT`.
+  - The ollama finder client (`lib/ollama_messages.py`) confines `Read`, `Glob` and `Grep` to the pinned clone and, via `--allow-read DIR` (repeatable), to extra read-only roots; stage 1 passes the run's work dir, where the prompt's diff, file list and metadata live. Roots are realpath-resolved (a symlink cannot leave one) and `.git` is refused under each.
 - `agy --print-timeout` defaults to 5m, too short for stage 1; the script passes `PR_REVIEW_S1_TIMEOUT` (25m) and the refuter passes `PR_REVIEW_REFUTE_TIMEOUT` (8m). `PR_REVIEW_AGY_TIMEOUT` is kept as a deprecated alias of the refuter one.
 - Targets bash 3.2 (macOS system bash): no `mapfile`, no `wait -n`, no associative arrays.
 - Posting is never automatic. The report file is always written first.

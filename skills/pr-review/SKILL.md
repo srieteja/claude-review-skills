@@ -66,7 +66,8 @@ Two knobs behave differently there, both deliberately:
 - **No `--max-budget-usd`.** The client reports no cost and has no dollar cap, so
   `PR_REVIEW_S1_TIMEOUT` (default 25m, a positive `N`, `Ns`, `Nm` or `Nh`) is the ceiling.
 - **No `Write` tool, so the model returns its findings in its reply.** The client gives the
-  model `Read`, `Glob` and `Grep` only, each confined to the pinned clone, and takes the
+  model `Read`, `Glob` and `Grep` only, each confined to the pinned clone plus one read-only extra root, the run's work dir
+  (`--allow-read`, which holds the diff, file list and metadata the prompt names), and takes the
   findings object from the final text. See `emit/README.md`.
 
 Stage-1 slices are cached per **model, effort and transport**, so a flash run never gets served
@@ -235,7 +236,7 @@ further than a report: a companion PR with the fix, against that author's own br
    - Except a package matching `AUTOFIX_ANALYZE_ONLY` (space-separated globs on its dir, default `tests/*`): its tests need a live rig, so it gets `flutter pub get && dart analyze --fatal-infos`. The PR body names each such package, and the implementer's prompt says not to run its tests. Set it empty to test every package.
    - Any failure, or a patch that doesn't apply cleanly, stops here with no PR.
 7. **On a clean gate, it commits exactly the staged patch** (none of `pub get`'s debris) on a detached HEAD, so no `fix/…` branch appears in your clone.
-   - The commit message is the PR title, then `Reviewed at <sha12>; the PR description carries each finding.`
+   - The commit message is the PR title, then `Reviewed at <sha12>; the PR description has the details.`
    - The implementer's task also inlines `SE.md` and `SECURITY.md` (`AUTOFIX_STANDARDS`, default both under `$HOME/work`; a missing file is skipped with a warning), since it is told to stay inside the tree.
    - It pushes `fix/pr<N>-review-findings-<sha12>` to origin's push URL, never forced and with no tags, and opens a PR against the reviewed PR's own head branch.
    - The title is neutral and fixed per lane: `fix: review findings from #N` (stacked), `fix: review findings on <base> from #N` (trunk), `chore: clear dart analyze issues on <base>` (lint). It never names a finding or a defect.
