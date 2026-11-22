@@ -705,5 +705,39 @@ class TestWriteBody(Base):
         self.assertEqual((d / "decision" / "body.md").read_text(), out)
 
 
+class TestEffortClamp(unittest.TestCase):
+    """default_llm passes claude the effort lib/common.sh's clamp_effort allows: low and medium
+    through, anything higher (or unknown) as medium."""
+
+    def effort_passed(self, requested):
+        with tempfile.TemporaryDirectory() as d:
+            stub = Path(d) / "claude"
+            stub.write_text('#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --effort ] && echo "$2" > "$0.effort"; shift; done\n'
+                            'echo \'{"type":"result","result":"ok"}\'\n')
+            stub.chmod(0o755)
+            env = {"PR_REVIEW_LEARN_CLAUDE": str(stub)}
+            if requested is not None:
+                env["PR_REVIEW_LEARN_EFFORT"] = requested
+            with mock.patch.dict(os.environ, env):
+                rl.default_llm("write")("prompt")
+            return (Path(d) / "claude.effort").read_text().strip()
+
+    def test_low_and_medium_pass_through(self):
+        self.assertEqual(self.effort_passed("low"), "low")
+        self.assertEqual(self.effort_passed("medium"), "medium")
+
+    def test_default_is_medium(self):
+        self.assertEqual(self.effort_passed(None), "medium")
+
+    def test_higher_or_unknown_becomes_medium(self):
+        for e in ("high", "xhigh", "max", "bogus"):
+            self.assertEqual(self.effort_passed(e), "medium", e)
+
+    def test_one_source(self):
+        """No second allowlist: the Python names no effort level of its own."""
+        src = (HERE / "review_learn.py").read_text()
+        self.assertNotIn('("low", "medium")', src)
+
+
 if __name__ == "__main__":
     unittest.main()

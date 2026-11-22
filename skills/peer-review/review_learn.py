@@ -598,11 +598,21 @@ def claude(prompt, model, effort, timeout):
     return ev["result"]
 
 
+def clamp_effort(effort):
+    """lib/common.sh's clamp_effort, the one allowlist: Claude effort is capped at medium for
+    every call in this repo. Anything it does not return (no bash, no common.sh) is medium."""
+    common = HERE.parent.parent / "lib" / "common.sh"
+    try:
+        p = subprocess.run(["bash", "-c", '. "$1"; clamp_effort "$2"', "_", str(common), effort],
+                           capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+        return (p.stdout.strip() or "medium") if p.returncode == 0 else "medium"
+    except (OSError, subprocess.SubprocessError):
+        return "medium"
+
+
 def default_llm(kind):
     model = os.environ.get("PR_REVIEW_LEARN_MODEL", "claude-sonnet-5-5")
-    effort = os.environ.get("PR_REVIEW_LEARN_EFFORT", "medium")
-    if effort not in ("low", "medium"):
-        effort = "medium"  # Claude effort is never above medium
+    effort = clamp_effort(os.environ.get("PR_REVIEW_LEARN_EFFORT", "medium"))
     timeout = 180 if kind == "write" else 600
     return lambda prompt: claude(prompt, model, effort, timeout)
 
