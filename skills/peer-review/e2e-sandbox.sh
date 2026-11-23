@@ -69,9 +69,19 @@ echo "flutter $*" >> "$STUB_LOG/dart"
 if [ "$1 $2" = "pub get" ]; then : > pubspec.lock; mkdir -p .dart_tool; fi
 STUB
 chmod +x "$SB/bin/"*
+# autofix's ship now requires pr_gate.py check to pass; this e2e is about the seam, not the gate.
+cat > "$SB/bin/pr_gate.py" <<'STUB'
+#!/usr/bin/env python3
+import os, sys
+with open(os.path.join(os.environ["STUB_LOG"], "pr_gate"), "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+sys.exit(1 if os.environ.get("STUB_GATE_RC") == "1" else 0)
+STUB
+chmod +x "$SB/bin/pr_gate.py"
 # PEER_REVIEW_AUTOFIX is deliberately left unset: the wrapper's own default path is under test.
 export PATH="$SB/bin:$PATH" PEER_REVIEW_INTENSE="$SB/bin/intense-review.sh" PEER_REVIEW_ENGINE=intense \
-       OLLAMA_API_KEY=k PR_REVIEW_FIX_AUTHORS=alice REVIEW_SKILLS_CONFIG="$SB/no-config" REVIEW_SKILLS_LOCK_DIR="$SB/locks"
+       OLLAMA_API_KEY=k PR_REVIEW_FIX_AUTHORS=alice REVIEW_SKILLS_CONFIG="$SB/no-config" REVIEW_SKILLS_LOCK_DIR="$SB/locks" \
+       PR_GATE_PY="$SB/bin/pr_gate.py" PR_GATE_ROOT="$SB" AUTOFIX_GATE_TREE_DIR="$SB/gate-trees"
 export REVIEW_SKILLS_MODELS=manual
 # The learning engine's hooks are offline-test.sh's; here they'd only call the claude stub.
 export PR_REVIEW_LEARN=off PR_REVIEW_LEARN_DIR="$SB/learn"

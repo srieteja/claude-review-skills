@@ -84,6 +84,8 @@ Show the user, from `<store>/<author>/<N>/` (the store `ENGINE=` named):
 | any, with a trunk lane | `autofix/trunk/{fix.patch,title,body.md}` |
 | fix | `autofix/fix.patch` (read it for anything beyond the findings: network calls, CI or config edits, deleted tests), `autofix/title`, `autofix/body.md` |
 
+For a fix, prepare also prints a **GATE brief** to stderr: the gate tree, its head SHA, `BODY=`, `NOTES=`, the base branch and the exact `pr_gate.py lint` / `review` commands. Write `NOTES` (autofix never invents gate notes), run the two commands on the gate tree, and fix any finding before ship. Ship runs `pr_gate.py check` and refuses to push unless both gates passed on that exact commit.
+
 Check the public text: an `@` that starts a word in finding text already carries a word joiner, so it pings no one, but any `@` you add will. Each `#N` cross-references; don't add closing keywords.
 
 **Ship only on an explicit yes.** It posts a public review or opens a public PR and pings the author.

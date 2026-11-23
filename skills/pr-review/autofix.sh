@@ -19,10 +19,18 @@
 # and report none otherwise. Ship reads only the frozen files.
 #
 # AUTOFIX_MODE picks how far one call goes:
-#   unset    implement, gate, push, open -- one shot, what an unattended caller runs
-#   prepare  implement and gate, then freeze patch, title, body and SHA into AUTOFIX_FROZEN
-#   ship     re-apply the frozen patch (claude is not re-run), re-gate, push, open with the
-#            frozen title and body -- what a human approved is exactly what gets posted
+#   unset    implement, test, then self-gate (pr_gate.py lint -> review -> check) on a stable gate
+#            tree and push/open from that commit -- one shot, what an unattended caller runs
+#   prepare  implement and gate, freeze patch, title, body and SHA into AUTOFIX_FROZEN, and make a
+#            stable gate tree under $HOME/work/.gate-tree (kept, since stamps bind to its path); print
+#            a GATE brief -- repo, head, BODY, NOTES, base and the two pr_gate.py commands -- to
+#            stderr. Nothing is pushed; the human/agent writes NOTES and runs the gate.
+#   ship     re-apply the frozen patch (claude is not re-run), re-gate, then require that the gate
+#            tree is the frozen patch's tree and that `pr_gate.py check` passes on its commit before
+#            pushing that exact commit and opening the PR -- what a human approved is what gets posted.
+# AUTOFIX_GATE_TREE_DIR (default $HOME/work/.gate-tree; must resolve under the gate root, PR_GATE_ROOT
+# or $HOME/work) and PR_GATE_PY (default $HOME/work/skills/pr-gate/pr_gate.py) move the gate tree and
+# the checker.
 # AUTOFIX_LANE picks the lane (default stacked). The trunk and lint lanes ignore the PR's head
 # moving and its fork, both stacked-only concerns, and ask the PR's author to review unless
 # AUTOFIX_REVIEWER names someone; AUTOFIX_TRUNK_REVIEWER=blame asks who last touched the line.
@@ -70,6 +78,10 @@ BUDGET="${AUTOFIX_BUDGET:-8.00}"; [ "$BUDGET" != none ] || BUDGET=""
 DRY_RUN="${AUTOFIX_DRY_RUN:-0}"          # stop after the test gate; never push or open a PR
 MODE="${AUTOFIX_MODE:-}"
 FROZEN="${AUTOFIX_FROZEN:-}"
+# The gate reviews a stable checkout under the gate root, not this run's temp tree: pr_gate.py keys its
+# stamps by path, so the gate tree must outlive the run and sit where check/review accept it.
+GATE_TREE_DIR="${AUTOFIX_GATE_TREE_DIR-$HOME/work/.gate-tree}"
+PR_GATE_PY="${PR_GATE_PY:-$HOME/work/skills/pr-gate/pr_gate.py}"
 REVIEWER="${AUTOFIX_REVIEWER:-}"
 LANE="${AUTOFIX_LANE:-stacked}"
 TRUNK_REVIEWER="${AUTOFIX_TRUNK_REVIEWER:-author}"
@@ -143,7 +155,7 @@ case "$MODE" in
   prepare) [ -n "$FROZEN" ] || die "AUTOFIX_MODE=prepare needs AUTOFIX_FROZEN"
            command -v "$CLAUDE" >/dev/null || die "claude not found as $CLAUDE (set AUTOFIX_CLAUDE)" ;;
   ship)    [ -n "$FROZEN" ] || die "AUTOFIX_MODE=ship needs AUTOFIX_FROZEN"
-           for f in fix.patch title body.md sha; do
+           for f in fix.patch title body.md sha gatetree gatesha; do
              [ -s "$FROZEN/$f" ] || die "nothing prepared in $FROZEN (no $f) -- run prepare first"
            done
            grep -q '[^[:space:]]' "$FROZEN/title" || die "$FROZEN/title is blank -- a PR needs one"
@@ -403,6 +415,95 @@ gate_fingerprint() {
   local h
   h="$(sha256_of < "$1" 2>/dev/null | awk '{ print $1 }')" && [ -n "$h" ] || return 1
   printf 'v1 %s %s %s %s\n' "$h" "$BASE_SHA" "$LANE" "${ANALYZE_ONLY[*]-}"
+}
+
+# prepare_gate_tree <out-dir> <patch> -- materialise <patch> as one commit in a stable clone under the gate root,
+# so lint/review/check see exactly the commit that will be pushed (and its path never changes under the stamps).
+# <out-dir> gets `gatesha` and `gatetree`. Kept, not temp: a re-run re-checks the same tree.
+prepare_gate_tree() {
+  local out="$1" patch="$2" who_name who_email dir_real root_real
+  # Refuse before deleting anything: an empty, /, out-of-root dir, or a name that isn't <digits>-<12 hex>, could
+  # make the rm -rf touch something that isn't ours.
+  GATE_ROOT="${PR_GATE_ROOT:-$HOME/work}"
+  [ -n "$GATE_TREE_DIR" ] || die "AUTOFIX_GATE_TREE_DIR is empty -- refusing to pick a gate tree"
+  case "$GATE_TREE_DIR" in /) die "AUTOFIX_GATE_TREE_DIR is / -- refusing to remove anything under it" ;; esac
+  case "$PR" in ""|*[!0-9]*) die "PR number '$PR' is not numeric -- refusing a gate tree path" ;; esac
+  case "${BASE_SHA:0:12}" in *[!0-9a-f]*) die "BASE_SHA '${BASE_SHA:0:12}' is not 12 hex -- refusing a gate tree path" ;; esac
+  GATE_TREE="$GATE_TREE_DIR/$PR-${BASE_SHA:0:12}"
+  case "$GATE_TREE" in
+    "$GATE_TREE_DIR"/[0-9]*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "gate tree path $GATE_TREE is not $GATE_TREE_DIR/<digits>-<12 hex>" ;;
+  esac
+  mkdir -p "$GATE_TREE_DIR"
+  dir_real="$(cd "$GATE_TREE_DIR" && pwd -P)"
+  root_real="$(cd "$GATE_ROOT" 2>/dev/null && pwd -P)" || die "gate root $GATE_ROOT does not exist"
+  case "$dir_real/" in
+    "$root_real"/*) ;;
+    *) die "gate tree dir $GATE_TREE_DIR is outside the gate root $GATE_ROOT" ;;
+  esac
+  rm -rf "$GATE_TREE"
+  git clone --quiet --shared --no-checkout "$ROOT" "$GATE_TREE" \
+    && git -C "$GATE_TREE" checkout --quiet --detach "$BASE_SHA" \
+    && git -C "$GATE_TREE" remote set-url origin "$ORIGIN" \
+    && git -C "$GATE_TREE" apply --index "$patch" \
+    || { rm -rf "$GATE_TREE"; die "could not materialise the gate tree at $GATE_TREE"; }
+  who_name="$(git -C "$ROOT" config user.name)"; who_email="$(git -C "$ROOT" config user.email)"
+  git -C "$GATE_TREE" -c user.name="$who_name" -c user.email="$who_email" \
+    commit -q -m "$TITLE" -m "Reviewed at ${SHA:0:12}; the PR description has the details." \
+    || { rm -rf "$GATE_TREE"; die "could not commit the gate tree at $GATE_TREE"; }
+  GATE_SHA="$(git -C "$GATE_TREE" rev-parse HEAD)"
+  printf '%s\n' "$GATE_SHA" > "$out/gatesha"
+  printf '%s\n' "$GATE_TREE" > "$out/gatetree"
+}
+
+# stacked_body -- the body with its cross-link line, once. A copy, never the frozen/edited file. Called before the
+# gate so one-shot reviews the exact body it posts; the later call is then a no-op.
+stacked_body() {
+  [ "$LANE" = stacked ] || return 0
+  if grep -Eq "#$PR([^0-9]|\$)" "$BODY"; then return 0; fi
+  # Appended, so the body still leads with what the fix does.
+  { cat "$BODY"; printf '\nStacked on #%s -- merge into its branch `%s`, not the default branch.\n' "$PR" "$BASE_BRANCH"
+  } > "$WORK/pr-body.md" && BODY="$WORK/pr-body.md"
+}
+
+# gate_run <step> <args> -- pr_gate.py <step> with stdout and stderr into one log; on failure die with the log's
+# last ~15 lines. Stdout is the STATUS protocol callers parse, so the gate's own output must never reach it.
+gate_run() {
+  local step="$1"; shift
+  python3 "$PR_GATE_PY" "$step" "$@" >>"$GATE_LOG" 2>&1 \
+    || die "PR gate $step did not pass -- no PR:
+$(tail -n 15 "$GATE_LOG" 2>/dev/null)"
+}
+
+# write_gate_notes -- $WORK/NOTES.md for a one-shot self-gate. Only what autofix ran: the gate decides, so this
+# makes no security-review claim, states no rule verdict and waives nothing.
+write_gate_notes() {
+  local pkg
+  {
+    printf '# Gate notes for autofix PR #%s\n\n' "$PR"
+    printf -- '- PR: #%s\n' "$PR"
+    printf -- '- Reviewed at: %s\n' "$SHA"
+    printf -- '- Implementer: %s\n' "$IMPLEMENTER"
+    printf -- '- Lane: %s; base: %s at %s\n\n' "$LANE" "$BASE_BRANCH" "${BASE_SHA:0:12}"
+    printf 'Findings fixed:\n'
+    if [ -s "$WORK/findings.json" ]; then
+      jq -r '.[] | "- \(.id) (\(.file):\(.line))"' "$WORK/findings.json"
+    else
+      printf -- '- none recorded (the lint lane fixes analyzer issues, not findings)\n'
+    fi
+    printf '\nGate mode per package:\n'
+    while IFS= read -r pkg; do
+      [ -n "$pkg" ] || continue
+      if analyze_only "$pkg"; then
+        printf -- '- `%s`: analyze-only (tests need a live rig; CI runs them)\n' "$pkg"
+      else
+        printf -- '- `%s`: tests\n' "$pkg"
+      fi
+    done <<< "$PACKAGES"
+    [ -n "$PACKAGES" ] || printf -- '- none (the patch touches no tested package)\n'
+    printf '\nNo gate verdict is pre-decided here. This file records only what autofix ran; it makes no'
+    printf ' security-review claim, states no rule verdict, and waives nothing.\n'
+  } > "$WORK/NOTES.md"
 }
 
 if [ "$MODE" = ship ]; then
@@ -672,6 +773,21 @@ if [ "$MODE" = prepare ]; then
   if [ "$LANE" != lint ] && FP="$(gate_fingerprint "$PATCH")" && [ "$FP" = "$(gate_fingerprint "$FROZEN/fix.patch")" ]; then
     printf '%s\n' "$FP" > "$FROZEN/gated"
   fi
+  prepare_gate_tree "$FROZEN" "$FROZEN/fix.patch"
+  # The human/agent reads these and runs the gate; autofix never invents NOTES, so it only names the
+  # file to write them in. Progress goes to stderr, keeping stdout to the STATUS protocol.
+  GATE_NOTES="$FROZEN/NOTES.md"
+  {
+    printf 'GATE repo=%s\n' "$GATE_TREE"
+    printf 'GATE head=%s\n' "$GATE_SHA"
+    printf 'GATE BODY=%s\n' "$FROZEN/body.md"
+    printf 'GATE NOTES=%s\n' "$GATE_NOTES"
+    printf 'GATE base=%s\n' "$BASE_BRANCH"
+    printf 'GATE next: python3 %s lint %s --body %s --notes %s --base %s\n' \
+      "$PR_GATE_PY" "$GATE_TREE" "$FROZEN/body.md" "$GATE_NOTES" "$BASE_BRANCH"
+    printf 'GATE next: python3 %s review %s --body %s --notes %s --base %s\n' \
+      "$PR_GATE_PY" "$GATE_TREE" "$FROZEN/body.md" "$GATE_NOTES" "$BASE_BRANCH"
+  } >&2
   say "prepared: patch applies and tests pass for #$PR -- frozen in $FROZEN, nothing pushed"
   status prepared; exit 0
 fi
@@ -681,25 +797,46 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
-# Commit the index on the detached HEAD: a named branch here would land in your clone, since
-# a worktree shares refs with $ROOT. The message is the title plus fixed text -- the body is
-# what a human edits before ship, and nothing else from the review goes into history.
-git -C "$TREE" -c user.name="$(git -C "$ROOT" config user.name)" \
-               -c user.email="$(git -C "$ROOT" config user.email)" \
-  commit -q -m "$TITLE" -m "Reviewed at ${SHA:0:12}; the PR description has the details."
+# Ship pushes only what the gate passed: the commit prepare made in the gate tree, re-checked against the frozen
+# patch's tree (so an edited patch can't ship unseen) and then by pr_gate.py. One-shot makes the same gate tree
+# itself, self-gates it, and pushes that commit.
+if [ "$MODE" = ship ]; then
+  GATE_TREE="$(cat "$FROZEN/gatetree")"; GATE_SHA="$(cat "$FROZEN/gatesha")"
+  [ -d "$GATE_TREE" ] || die "gate tree $GATE_TREE is gone -- re-prepare"
+  [ "$(git -C "$GATE_TREE" rev-parse HEAD 2>/dev/null || true)" = "$GATE_SHA" ] \
+    || die "$GATE_TREE is not at the frozen $GATE_SHA -- re-prepare"
+  WANT_TREE="$(git -C "$TREE" write-tree)" || die "could not hash the patched tree"
+  HAVE_TREE="$(git -C "$GATE_TREE" rev-parse 'HEAD^{tree}')"
+  [ "$WANT_TREE" = "$HAVE_TREE" ] \
+    || die "the frozen patch's tree ($WANT_TREE) is not the gate tree's ($HAVE_TREE) -- re-prepare"
+  GATE_LOG="$WORK/gate.log"; : > "$GATE_LOG"
+  gate_run check "$GATE_TREE" "$GATE_SHA"
+  COMMIT_TREE="$GATE_TREE"
+else
+  # One-shot: the same gate tree prepare makes, so the commit lint/review/check see is the one pushed. NOTES
+  # records only what autofix ran; the gate decides, and the first non-zero stops before any push.
+  stacked_body
+  prepare_gate_tree "$WORK" "$PATCH"
+  write_gate_notes
+  GATE_LOG="$WORK/gate.log"; : > "$GATE_LOG"
+  gate_run lint "$GATE_TREE" --body "$BODY" --notes "$WORK/NOTES.md" --base "$BASE_BRANCH"
+  gate_run review "$GATE_TREE" --body "$BODY" --notes "$WORK/NOTES.md" --base "$BASE_BRANCH"
+  gate_run check "$GATE_TREE" "$GATE_SHA"
+  COMMIT_TREE="$GATE_TREE"
+fi
 
 # Never forced. A fix branch already on origin is resumed only when it is this fix exactly --
 # one commit on $BASE_SHA with this tree, as a run whose `pr create` failed leaves it. Anything
 # else on that branch is someone's work: left for you to look at. Both talk to $ORIGIN, the
 # push URL the guard checked, so the branch is looked for where it would go.
-if git -C "$TREE" fetch -q "$ORIGIN" "refs/heads/$BRANCH" 2>/dev/null; then
-  [ "$(git -C "$TREE" rev-parse 'FETCH_HEAD^{tree}')" = "$(git -C "$TREE" rev-parse 'HEAD^{tree}')" ] \
-    && [ "$(git -C "$TREE" rev-parse -q --verify 'FETCH_HEAD~1')" = "$BASE_SHA" ] \
+if git -C "$COMMIT_TREE" fetch -q "$ORIGIN" "refs/heads/$BRANCH" 2>/dev/null; then
+  [ "$(git -C "$COMMIT_TREE" rev-parse 'FETCH_HEAD^{tree}')" = "$(git -C "$COMMIT_TREE" rev-parse 'HEAD^{tree}')" ] \
+    && [ "$(git -C "$COMMIT_TREE" rev-parse -q --verify 'FETCH_HEAD~1')" = "$BASE_SHA" ] \
     || die "origin already has $BRANCH, and it isn't this fix -- look at it, then: git push origin --delete $BRANCH"
   say "$BRANCH is already on origin with this fix -- opening its PR"
 else
   # --no-follow-tags: a push.followTags config would otherwise publish local tags on $BASE_SHA.
-  git -C "$TREE" push -q --no-follow-tags "$ORIGIN" "HEAD:refs/heads/$BRANCH" >&2 || die "push failed"
+  git -C "$COMMIT_TREE" push -q --no-follow-tags "$ORIGIN" "HEAD:refs/heads/$BRANCH" >&2 || die "push failed"
 fi
 
 # Only a ship's re-run finds this branch again: it re-applies the same frozen patch, where a
@@ -710,13 +847,9 @@ else RETRY="open its PR by hand, or clear it for the next run: git push origin -
 # Done on a copy here, not in body.md: a human may have edited the frozen one. Trunk and lint
 # need none: their bodies already cite #$PR ("since #N merged", "predate #N", lint's own line),
 # and a "found while reviewing" line would only repeat that.
-if [ "$LANE" = stacked ] && ! grep -Eq "#$PR([^0-9]|\$)" "$BODY"; then
-  # Appended, so the body still leads with what the fix does.
-  { cat "$BODY"; printf '\nStacked on #%s -- merge into its branch `%s`, not the default branch.\n' "$PR" "$BASE_BRANCH"
-  } > "$WORK/pr-body.md" && BODY="$WORK/pr-body.md"
-fi
-FIX_URL="$(gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$BRANCH" \
-  --title "$TITLE" --body-file "$BODY" | tail -n 1)" \
+stacked_body
+FIX_URL="$( cd "$COMMIT_TREE" && gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$BRANCH" \
+  --title "$TITLE" --body-file "$BODY" | tail -n 1 )" \
   || die "gh pr create failed -- $BRANCH is pushed; $RETRY"
 say "opened $FIX_URL against $BASE_BRANCH"
 status "opened:$FIX_URL"

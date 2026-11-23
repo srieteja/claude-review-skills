@@ -201,7 +201,9 @@ further than a report: a companion PR with the fix, against that author's own br
   if `--post`), `autofix.sh` runs one-shot once per lane with something to fix (`lanes.jq`):
   `stacked` for what the PR introduced, `trunk` for what was already on its base (everything,
   once merged), and `lint` too with `AUTOFIX_LINT=1`. Each lane's lines come out as
-  `LANE=<lane> STATUS=…`. `--no-fix` skips it; so does `--sha`, which reviews a pinned commit
+  `LANE=<lane> STATUS=…`. The one-shot run self-gates before opening: `pr_gate.py lint`,
+  `review`, then `check` on the commit it pushes, from a stable gate tree, and refuses the PR on
+  the first non-zero (as ship does). `--no-fix` skips it; so does `--sha`, which reviews a pinned commit
   rather than the head.
   - `opened:<url>`, `exists:<url>`, `none` or `dropped` in every lane -> exit 0.
   - **Anything else in any lane -> exit 4** with a `NO fix PR` warning: the head moved
@@ -237,6 +239,7 @@ further than a report: a companion PR with the fix, against that author's own br
    - Any failure, or a patch that doesn't apply cleanly, stops here with no PR.
 7. **On a clean gate, it commits exactly the staged patch** (none of `pub get`'s debris) on a detached HEAD, so no `fix/…` branch appears in your clone.
    - The commit message is the PR title, then `Reviewed at <sha12>; the PR description has the details.`
+   - One-shot and prepare commit that patch in a stable gate tree under `$HOME/work/.gate-tree` (a shared clone, kept because the PR gate's stamps bind to the checkout path). One-shot then runs `pr_gate.py lint`, `review` and `check` on it before the push; prepare prints a **GATE brief** to stderr: repo, head, `BODY=`, `NOTES=` (a file you write -- autofix never invents gate notes), base and the exact `pr_gate.py lint` / `review` commands. Ship pushes that same commit, and only after `pr_gate.py check` passes on it.
    - The implementer's task also inlines `SE.md` and `SECURITY.md` (`AUTOFIX_STANDARDS`, default both under `$HOME/work`; a missing file is skipped with a warning), since it is told to stay inside the tree.
    - It pushes `fix/pr<N>-review-findings-<sha12>` to origin's push URL, never forced and with no tags, and opens a PR against the reviewed PR's own head branch.
    - The title is neutral and fixed per lane: `fix: review findings from #N` (stacked), `fix: review findings on <base> from #N` (trunk), `chore: clear dart analyze issues on <base>` (lint). It never names a finding or a defect.
@@ -247,7 +250,7 @@ further than a report: a companion PR with the fix, against that author's own br
 8. **When origin already has the fix branch but no PR** (a run whose `pr create` failed):
    - If it holds one commit on `<sha>` with this exact tree, the PR is opened on it without pushing. The lookup goes to the push URL, where the push would.
    - Anything else is refused with exit 1, naming the `git push origin --delete` to run once you've looked.
-   - In the one-shot mode a re-run re-implements, so its tree will usually differ and the left-over branch is refused. Its `pr create` failure says so: open the PR by hand or delete the branch. Ship re-applies the frozen patch, so a re-run of ship resumes.
+   - In the one-shot mode a re-run re-implements, so its tree will usually differ and the left-over branch is refused. Its `pr create` failure says so: open the PR by hand or delete the branch. Ship re-applies the frozen patch and pushes the gate tree's own commit, so a re-run of ship resumes.
 
 stdout is a machine-readable protocol. Progress goes to stderr:
 
@@ -269,9 +272,11 @@ Guard, implementer, test-gate, push and `pr create` failures, and a fix branch t
 
 | env | effect |
 |---|---|
-| *(unset)* | one shot: implement, gate, push, open. Nothing calls this mode any more; peer-review uses prepare and ship. |
-| `AUTOFIX_MODE=prepare AUTOFIX_FROZEN=<dir>` | implement and gate, then freeze `fix.patch`, `title`, `body.md` and `sha` into `<dir>`. Nothing is pushed. |
-| `AUTOFIX_MODE=ship AUTOFIX_FROZEN=<dir>` | re-apply the frozen patch (claude is not re-run), re-gate unless the patch and base fingerprint is unchanged since prepare's passing gate (the lint lane always re-gates), then push and open with the frozen title and body. Edits to `body.md` are what gets posted. A blank `title` is refused before anything is pushed. |
+| *(unset)* | one shot: implement, test, then self-gate (`pr_gate.py lint` -> `review` -> `check`) on a stable gate tree and push/open from that commit. `/pr-review`'s stage 5 uses this. |
+| `AUTOFIX_MODE=prepare AUTOFIX_FROZEN=<dir>` | implement and gate, then freeze `fix.patch`, `title`, `body.md`, `sha` and the gate tree (`gatetree`, `gatesha`) into `<dir>`, and print the GATE brief. The gate tree is a stable clone under `$HOME/work/.gate-tree`, kept so the check can be re-run. Nothing is pushed. |
+| `AUTOFIX_MODE=ship AUTOFIX_FROZEN=<dir>` | re-apply the frozen patch (claude is not re-run), re-gate unless the patch and base fingerprint is unchanged since prepare's passing gate (the lint lane always re-gates), verify the gate tree is the frozen patch's tree, require `pr_gate.py check` to pass on its commit, then push that exact commit and open with the frozen title and body. Edits to `body.md` are what gets posted. A blank `title`, a vanished gate tree or a failed check is refused before anything is pushed. |
+| `AUTOFIX_GATE_TREE_DIR` | where autofix materialises the gate tree (default `$HOME/work/.gate-tree`); it must resolve under the gate root (`PR_GATE_ROOT`, default `$HOME/work`), since stamps bind to the path. An empty, `/`, or out-of-root dir is refused before anything is deleted. |
+| `PR_GATE_PY` | the checker ship runs (default `$HOME/work/skills/pr-gate/pr_gate.py`). |
 | `AUTOFIX_REVIEWER=<login>` | once the PR is open, request `<login>`'s review. Skipped for yourself and for bots, which GitHub would reject with a 422. |
 | `AUTOFIX_LANE=stacked\|trunk` | `stacked` (default): findings `route` labelled introduced, on the PR's head branch. `trunk`: the `pre-existing` ones -- all of them once the PR merged -- on the tip of its `baseRefName`, branch `fix/pr<N>-preexisting-<sha12>`. The trunk lane skips the stale and fork guards, asks the PR's author to review, and names who last touched each line (no `@`). Prepare freezes `base` = `<branch> <sha>`; ship commits on it. A closed, unmerged PR is refused in both. |
 | `AUTOFIX_TRUNK_REVIEWER=blame` | trunk lane: request whoever last touched the first cited line instead of the PR's author (the author when blame finds no one). |

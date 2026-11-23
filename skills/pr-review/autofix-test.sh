@@ -23,6 +23,7 @@ case "$1 $2" in
   "pr list")   [ -z "${STUB_EXISTING:-}" ] || echo "$STUB_EXISTING" ;;
   "pr create")
     [ "${STUB_CREATE_RC:-0}" = 0 ] || exit "$STUB_CREATE_RC"
+    pwd >> "$STUB_LOG/gh.cwd"
     while [ $# -gt 0 ]; do
       case "$1" in
         --title) printf '%s' "$2" > "$STUB_LOG/title"; shift ;;
@@ -104,6 +105,36 @@ if [ "$1" = analyze ]; then
 fi
 STUB
 chmod +x "$SB/bin/"*
+# pr_gate.py, stubbed for ship: logs the call, passes unless STUB_GATE_RC says otherwise. Nothing
+# here reads a real stamp; the point is that ship consults it, on the gate tree and its commit.
+cat > "$SB/bin/pr_gate.py" <<'STUB'
+#!/usr/bin/env python3
+import os, sys
+log = os.environ.get("STUB_LOG")
+if log:
+    with open(os.path.join(log, "pr_gate"), "a") as f:
+        f.write(" ".join(sys.argv[1:]) + "\n")
+# The real tool prints rows and summaries to stdout; autofix must keep them off its STATUS protocol.
+step = sys.argv[1]
+if step == "lint":
+    print("SE-1: pass  `f.py:1` looked")
+    print("lint: pass")
+if step == "review":
+    print("PR gate review of repo @ deadbeef\n  se: pass\n  sec: pass")
+if step == "check":
+    print("PR gate: ok")
+if os.environ.get("STUB_REVIEW_RC") == "1" and step == "review":
+    sys.stderr.write("se-gate: fail (SE-2) in review\n")
+    sys.exit(1)
+if os.environ.get("STUB_CHECK_RC") == "1" and step == "check":
+    sys.stderr.write("se-gate: fail (SE-2) on the check\n")
+    sys.exit(1)
+if os.environ.get("STUB_GATE_RC", "0") != "0":
+    sys.stderr.write("se-gate: fail (SE-2)\n")
+    sys.exit(int(os.environ["STUB_GATE_RC"]))
+sys.exit(0)
+STUB
+chmod +x "$SB/bin/pr_gate.py"
 export PATH="$SB/bin:$PATH" REVIEW_SKILLS_CONFIG="$SB/no-config"
 
 prlist() {  # prlist <number>:<state>... -- gh pr list --json url,state, in that order
@@ -141,6 +172,7 @@ setup() {
   git clone -q --bare "$C/repo" "$C/remotes/acme/widgets.git"
   git -C "$C/repo" remote add origin "$C/remotes/acme/widgets.git"
   SHA="$(git -C "$C/repo" rev-parse HEAD)"; FB="fix/pr7-review-findings-${SHA:0:12}"
+  GT="$C/work/.gate-tree/7-${SHA:0:12}"; mkdir -p "$C/work"
   printf 'new\n' > "$C/repo/pkg/lib/a.dart"
   git -C "$C/repo" diff > "$C/fix.patch"; git -C "$C/repo" checkout -q -- .
   cat > "$C/out/merged.json" <<'JSON'
@@ -152,8 +184,9 @@ JSON
   printf '{"url":"https://github.com/acme/widgets/pull/7","headRefOid":"%s"}' "$SHA" > "$C/out/meta.json"
   FROZEN="$C/out/autofix"
   export STUB_LOG="$C/log" STUB_PATCH="$C/fix.patch" STUB_REPO=acme/widgets STUB_EXISTING="" \
-         STUB_ME=me STUB_BLAME=bob STUB_EDIT_RC=0 STUB_DART_RC=0 STUB_ANALYZE_RC=0 STUB_ANALYZE_OLD="" STUB_ANALYZE_NEW="" STUB_CLAUDE_RC=0 STUB_CREATE_RC=0 STUB_DART_STDIN="" \
-         STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success STUB_CLAUDE_SH="" STUB_CLAUDE_OUT="" STUB_OLLAMA_OUT=""
+         STUB_ME=me STUB_BLAME=bob STUB_EDIT_RC=0 STUB_DART_RC=0 STUB_ANALYZE_RC=0 STUB_ANALYZE_OLD="" STUB_ANALYZE_NEW="" STUB_CLAUDE_RC=0 STUB_CREATE_RC=0 STUB_DART_STDIN="" STUB_GATE_RC=0 STUB_CHECK_RC=0 STUB_REVIEW_RC=0 \
+         STUB_PRVIEW="$(prview false "$SHA")" STUB_NOOP="" STUB_COMMIT="" STUB_IS_ERROR=false STUB_SUBTYPE=success STUB_CLAUDE_SH="" STUB_CLAUDE_OUT="" STUB_OLLAMA_OUT="" \
+         PR_GATE_PY="$SB/bin/pr_gate.py" PR_GATE_ROOT="$C/work" AUTOFIX_GATE_TREE_DIR="$C/work/.gate-tree"
   unset OLLAMA_API_KEY AUTOFIX_IMPLEMENTERS AUTOFIX_OLLAMA_MODEL AUTOFIX_DEFER_FALLBACK AUTOFIX_LINT_LEVEL AUTOFIX_MODE AUTOFIX_FROZEN AUTOFIX_REVIEWER AUTOFIX_LANE AUTOFIX_TRUNK_REVIEWER AUTOFIX_DRY_RUN AUTOFIX_MODEL AUTOFIX_EFFORT AUTOFIX_BUDGET AUTOFIX_CLAUDE AUTOFIX_ANALYZE_ONLY
   # Hermetic: the standards the implementer is told about are fixtures, not the host's ~/work.
   mkdir -p "$C/std"; printf 'SE-1 one concern\n' > "$C/std/SE.md"; printf 'SEC-1 identity\n' > "$C/std/SECURITY.md"
@@ -198,16 +231,22 @@ trunk_ahead() { trunk_commit more; FB="fix/pr7-preexisting-${SHA:0:12}"; }
 trunk_lint() { trunk_commit "$@"; FB="fix/pr7-lint-${SHA:0:12}"; }
 # route <label> -- every finding routed <label>, as pr-review.sh's route step writes it
 route() { jq --arg r "$1" 'map(.route = $r)' "$C/out/merged.json" > "$C/m" && mv "$C/m" "$C/out/merged.json"; }
-run() {  # run [sha] -- autofix.sh for PR #7 against this case; sets rc, captures stdout/stderr
+run_pr() {  # run_pr <pr> [sha] -- autofix.sh with an explicit PR; sets rc, captures stdout/stderr
   rc=0
-  ( cd "$C/repo" && "$HERE/autofix.sh" 7 "${1:-$SHA}" "$C/repo" "$C/out" ) >"$C/stdout" 2>"$C/stderr" || rc=$?
+  ( cd "$C/repo" && "$HERE/autofix.sh" "$1" "${2:-$SHA}" "$C/repo" "$C/out" ) >"$C/stdout" 2>"$C/stderr" || rc=$?
 }
+run() { run_pr 7 "${1:-$SHA}"; }  # run [sha] -- autofix.sh for PR #7 against this case
 # rerun [sha] -- run, committing at another time. Two runs in the same second build
 # byte-identical commits, so a "resumed" push would be a no-op and pass without the resume.
 rerun() { GIT_AUTHOR_DATE=2001-01-01T00:00:00Z GIT_COMMITTER_DATE=2001-01-01T00:00:00Z run "$@"; }
 rc_is()   { [ "$rc" = "$1" ]; }
 said()    { grep -qxF -- "$1" "$C/stdout"; }                 # an exact STATUS=/REVIEWER= line
+stdout_protocol() { [ -z "$(grep -Ev '^[A-Z]+=|^$' "$C/stdout")" ]; }   # only STATUS/REVIEWER/IMPLEMENTER lines
+stdout_lacks() { ! grep -qF -- "$1" "$C/stdout"; }
 logged()  { [ -f "$C/log/$1" ] && grep -qF -- "$2" "$C/log/$1"; }
+gate_logged() { [ -f "$C/log/pr_gate" ] && grep -qF -- "check $(cat "$FROZEN/gatetree") $(cat "$FROZEN/gatesha")" "$C/log/pr_gate"; }
+gate_notes() { sed -n 's/.*--notes \([^ ]*\).*/\1/p' "$C/log/pr_gate" | tail -n 1; }   # the NOTES the last gate call used
+notes_have() { [ -s "$(gate_notes)" ] && grep -qF -- "$1" "$(gate_notes)"; }
 never()   { ! logged "$@"; }
 absent()  { ! grep -qE -- "$2" "$1" 2>/dev/null; }
 calls()   { if [ -f "$C/log/$1" ]; then wc -l < "$C/log/$1" | tr -d ' '; else echo 0; fi; }
@@ -237,6 +276,20 @@ echo "default path (what an unattended caller runs)"
 setup; run
 check "exits 0"                                rc_is 0
 check "reports the opened PR"                  said "STATUS=opened:$URL"
+check "self-gates: lint, review, then check"   [ "$(awk '{print $1}' "$C/log/pr_gate" | paste -sd, -)" = "lint,review,check" ]
+check "  on the gate tree, at its commit"      grep -qF -- "check $GT $(git -C "$GT" rev-parse HEAD)" "$C/log/pr_gate"
+check "writes gate notes naming the PR"        notes_have "#7"
+check "  the reviewed SHA"                     notes_have "$SHA"
+check "  the implementer"                      notes_have "claude-opus-5-5"
+check "  the findings fixed"                   notes_have "anthropic.c01-F1 (pkg/lib/a.dart:1)"
+check "  the tested package and mode"          notes_have '`pkg`: tests'
+check "  and no pre-decided verdict"           notes_have "No gate verdict is pre-decided"
+check "pushes the gated commit"                [ "$(remote_tip)" = "$(git -C "$GT" rev-parse HEAD)" ]
+check "opens the PR from the gate tree"        grep -qx "$GT" "$C/log/gh.cwd"
+check "stdout is only the STATUS protocol"     stdout_protocol
+check "  no SE rows"                           stdout_lacks "SE-"
+check "  no lint summary"                      stdout_lacks "lint:"
+check "  no review summary"                    stdout_lacks "PR gate review of"
 check "implements via claude once"                [ "$(calls claude)" = 1 ]
 check "pushes the fix branch"                  pushed
 check "pushed tree carries the fix"            pushed_file_is new
@@ -280,6 +333,31 @@ check "  but not all of dart"                  sh -c "! grep -qxF 'Bash(dart:*)'
 check "  in a clone with no remote to push to" [ ! -s "$C/log/claude.remotes" ]
 check "  but no other shell"                   sh -c "! grep -qxE 'Bash|Bash\\((git|\\*).*' '$C/log/claude.args'"
 check "prompt says it runs unattended"         logged task.md "unattended"
+
+echo "one-shot self-gate"
+setup; export STUB_GATE_RC=1; run
+check "lint fails: exits 1"                    rc_is 1
+check "  prints the gate's reason"             grep -qF "SE-2" "$C/stderr"
+check "  stops before review and check"        [ "$(wc -l < "$C/log/pr_gate" | tr -d ' ')" = 1 ]
+check "  never pushes"                         unpushed
+check "  never opens a PR"                     never gh "pr create"
+
+setup; export STUB_REVIEW_RC=1; run
+check "review fails: exits 1"                  rc_is 1
+check "  the reason reaches stderr"            grep -qF "SE-2" "$C/stderr"
+check "  stdout is only the STATUS protocol"   stdout_protocol
+check "  no SE rows"                           stdout_lacks "SE-"
+check "  no review summary"                    stdout_lacks "PR gate review of"
+check "  ran lint first"                       [ "$(awk '{print $1}' "$C/log/pr_gate" | paste -sd, -)" = "lint,review" ]
+check "  never pushes"                         unpushed
+check "  never opens a PR"                     never gh "pr create"
+
+setup; export STUB_CHECK_RC=1; run
+check "check fails: exits 1"                   rc_is 1
+check "  prints the gate's reason"             grep -qF "SE-2" "$C/stderr"
+check "  ran lint and review first"            [ "$(awk '{print $1}' "$C/log/pr_gate" | paste -sd, -)" = "lint,review,check" ]
+check "  never pushes"                         unpushed
+check "  never opens a PR"                     never gh "pr create"
 
 setup; jq '. + [.[0] | .id = "anthropic.c02-F1" | .claim = "Stale cache on boot."]' \
   "$C/out/merged.json" > "$C/m" && mv "$C/m" "$C/out/merged.json"; run
@@ -617,10 +695,46 @@ check "freezes the patch"                      cmp -s "$FROZEN/fix.patch" "$C/fi
 check "freezes the reviewed SHA"               [ "$(cat "$FROZEN/sha")" = "$SHA" ]
 check "freezes the title"                      [ -s "$FROZEN/title" ]
 check "freezes the body"                       grep -qF "Old value leaks past the reset." "$FROZEN/body.md"
+check "freezes the gate tree's path"           [ -s "$FROZEN/gatetree" ]
+check "  which is a checkout under the gate root" [ -d "$(cat "$FROZEN/gatetree")" ]
+check "freezes a full gate sha"                grep -qE '^[0-9a-f]{40}$' "$FROZEN/gatesha"
+check "  which is the gate tree's HEAD"        [ "$(git -C "$(cat "$FROZEN/gatetree")" rev-parse HEAD)" = "$(cat "$FROZEN/gatesha")" ]
+check "  the gate tree carries the fix"        [ "$(git -C "$(cat "$FROZEN/gatetree")" show HEAD:pkg/lib/a.dart)" = new ]
+check "prints the GATE brief"                  grep -q '^GATE repo=' "$C/stderr"
+check "  with the gate head"                   [ "$(sed -n 's/^GATE head=//p' "$C/stderr")" = "$(cat "$FROZEN/gatesha")" ]
+check "  BODY and NOTES paths"                 sh -c "grep -q '^GATE BODY=' '$C/stderr' && grep -q '^GATE NOTES=' '$C/stderr'"
+check "  the base branch"                      grep -qx "GATE base=feature-x" "$C/stderr"
+check "  and the two next commands"            [ "$(grep -c '^GATE next: .*pr_gate.py .*' "$C/stderr")" = 2 ]
+check "never runs the gate itself"             [ ! -e "$C/log/pr_gate" ]
 check "runs the test gate"                     logged dart test
 check "  one test file at a time, as CI does"  logged dart "test --concurrency=1"
 check "never pushes"                           unpushed
 check "never opens a PR"                       never gh "pr create"
+
+echo "gate tree guard"
+# The gate tree is deleted and rebuilt; a bad dir or name must be refused before the rm touches anything.
+setup; mkdir -p "$C/work/.gate-tree"; : > "$C/work/.gate-tree/sentinel"
+export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN" AUTOFIX_GATE_TREE_DIR=""; run
+check "an empty gate tree dir: refused"        rc_is 1
+check "  says why"                             grep -qF "AUTOFIX_GATE_TREE_DIR is empty" "$C/stderr"
+check "  nothing deleted"                      [ -e "$C/work/.gate-tree/sentinel" ]
+
+setup; mkdir -p "$C/work/.gate-tree"; : > "$C/work/.gate-tree/sentinel"
+export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN" AUTOFIX_GATE_TREE_DIR="/"; run
+check "gate tree dir /: refused"               rc_is 1
+check "  nothing deleted"                      [ -e "$C/work/.gate-tree/sentinel" ]
+
+setup; mkdir -p "$C/outside"; : > "$C/outside/sentinel"
+export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN" AUTOFIX_GATE_TREE_DIR="$C/outside"; run
+check "outside the gate root: refused"         rc_is 1
+check "  says why"                             grep -qF "outside the gate root" "$C/stderr"
+check "  nothing deleted"                      [ -e "$C/outside/sentinel" ]
+
+setup; mkdir -p "$C/work/.gate-tree"; : > "$C/work/.gate-tree/sentinel"
+export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run_pr 7x "$SHA"
+check "a non-numeric PR: refused"              rc_is 1
+check "  says why"                             grep -qF "PR number" "$C/stderr"
+check "  nothing deleted"                      [ -e "$C/work/.gate-tree/sentinel" ]
 
 setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN" STUB_PRVIEW="$(prview false deadbeef)"; run
 check "head moved since the review: refused"   rc_is 1
@@ -645,8 +759,35 @@ check "  and names the PR it stands on, last"  [ "$(tail -n 1 "$C/log/body")" = 
 check "pushes the frozen patch"                pushed_file_is new
 check "posts the frozen title"                 cmp -s "$C/log/title" "$FROZEN/title"
 check "posts the frozen body as edited"        logged body "EDITED BEFORE SHIPPING"
+check "the PR gate passed on the gate tree before the push" gate_logged
+check "ship stdout is only the STATUS protocol" stdout_protocol
 
 check "commit subject is the frozen title"     subject_is "$(cat "$FROZEN/title")"
+
+# The gate is the only thing between the frozen commit and a public PR: a failing check, a vanished gate
+# tree, or a frozen patch that no longer makes the gate tree's tree must stop ship before the push.
+setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
+export AUTOFIX_MODE=ship STUB_GATE_RC=1; run
+check "the PR gate fails: exits 1"             rc_is 1
+check "  says the gate refused"                grep -qF "PR gate check did not pass" "$C/stderr"
+check "  and repeats its reason"               grep -qF "SE-2" "$C/stderr"
+check "  never pushes"                         unpushed
+check "  never opens a PR"                     never gh "pr create"
+
+setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
+rm -rf "$(cat "$FROZEN/gatetree")"; export AUTOFIX_MODE=ship; run
+check "the gate tree is gone: refused"         rc_is 1
+check "  says to re-prepare"                   grep -qF "re-prepare" "$C/stderr"
+check "  never pushes"                         unpushed
+check "  never opens a PR"                     never gh "pr create"
+
+setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
+sed 's/^+new$/+newer/' "$FROZEN/fix.patch" > "$FROZEN/p" && mv "$FROZEN/p" "$FROZEN/fix.patch"
+export AUTOFIX_MODE=ship; run
+check "a frozen patch edited after prepare: refused" rc_is 1
+check "  before the push"                      unpushed
+check "  and names the tree mismatch"          grep -qF "not the gate tree" "$C/stderr"
+check "  never opens a PR"                     never gh "pr create"
 
 # No record, or a record for other bytes: ship re-runs the test gate.
 setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN" AUTOFIX_MODEL=claude-sonnet-5-5; run
@@ -661,7 +802,8 @@ setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
 printf 'fix: tidy the reset path' > "$FROZEN/title"; rm "$C/out/merged.json" "$C/out/meta.json"
 export AUTOFIX_MODE=ship; run
 check "review record gone since prepare: ships the frozen files" said "STATUS=opened:$URL"
-check "  commit subject is the edited title"   subject_is "fix: tidy the reset path"
+check "  the pushed commit is the one prepare made" subject_is "fix: review findings from #7"
+check "  an edited title still posts as the PR title" [ "$(cat "$C/log/title")" = "fix: tidy the reset path" ]
 check "  commit carries no finding text"       commit_lacks "Old value leaks"
 
 setup; export AUTOFIX_MODE=prepare AUTOFIX_FROZEN="$FROZEN"; run
