@@ -391,6 +391,26 @@ class ConversationTest(unittest.TestCase):
         self.assertEqual((result_block["type"], result_block["tool_use_id"]), ("tool_result", "t1"))
         self.assertIn("hello needle", result_block["content"])
 
+    def test_a_no_tool_reply_reports_read_as_empty(self):
+        # No Read/Grep/Glob ever ran. Whatever the model says, "read" is the evidence of
+        # what it opened, and it opened nothing.
+        final = reply({"type": "text", "text": json.dumps(
+            {"findings": [{"id": "F1"}], "read": ["src/a.txt"]})})
+        rc, env, _ = self.run_main([final])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(env["result"])["read"], [])
+
+    def test_read_after_reads_is_exactly_the_relative_paths_opened(self):
+        queue = [
+            reply({"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "src/a.txt"}}),
+            reply({"type": "tool_use", "id": "t2", "name": "Glob", "input": {"pattern": "*.txt"}}),
+            reply({"type": "text", "text": json.dumps({"findings": [{"id": "F1"}]})}),
+        ]
+        rc, env, _ = self.run_main(queue)
+        self.assertEqual(rc, 0)
+        # Read records the file; Glob's listing is not a read. Sorted, relative, and no ".".
+        self.assertEqual(json.loads(env["result"])["read"], ["src/a.txt"])
+
     def test_request_carries_only_the_ollama_key_to_the_endpoint(self):
         rc, _, _ = self.run_main([reply({"type": "text", "text": json.dumps(FINDINGS)})],
                                  env={"ANTHROPIC_API_KEY": "sk-ant-SECRET", "ANTHROPIC_AUTH_TOKEN": "auth-SECRET",
@@ -515,10 +535,35 @@ class ConversationTest(unittest.TestCase):
         self.assertIn("tools", self.body(0))
         self.assertNotIn("tools", self.body(2))  # the wrap-up call offers no tools
         self.assertEqual(self.body(2)["thinking"], {"type": "disabled"})
-        self.assertIn("tool execution limit", self.body(2)["messages"][-1]["content"])
+        # The wrap-up rides in the last user turn, not a second one after it.
+        last = self.body(2)["messages"][-1]
+        self.assertEqual(last["role"], "user")
+        last_text = " ".join(b.get("text", "") for b in last["content"] if isinstance(b, dict))
+        self.assertIn("tool execution limit", last_text)
         # the last in-loop turn already asked the model to wrap up
         self.assertEqual(self.body(1)["messages"][-1]["content"][-1]["type"], "text")
         self.assertEqual(json.loads(env["result"])["findings"], [{"id": "F1"}])
+        # Both wrap-ups ask for "checked": a compliant no-findings reply that omitted it
+        # would then fail the shell's coverage gate.
+        self.assertIn("checked", self.body(1)["messages"][-1]["content"][-1]["text"])
+        self.assertIn("checked", last_text)
+
+    def test_max_turns_one_never_sends_two_user_turns_in_a_row(self):
+        # max_turns=1 leaves the tool result as the final user turn; appending a second user
+        # message for the wrap-up is an HTTP 400 from the Messages API.
+        tool = reply({"type": "tool_use", "id": "t", "name": "Glob", "input": {"pattern": "*"}})
+        final = reply({"type": "text", "text": json.dumps(FINDINGS)})
+        rc, env, _ = self.run_main([tool, final], "--max-turns", "1")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(self.requests), 2)
+        messages = self.body(1)["messages"]
+        for before, after in zip(messages, messages[1:]):
+            self.assertFalse(before["role"] == after["role"] == "user", messages)
+        last = messages[-1]
+        self.assertEqual(last["role"], "user")
+        self.assertEqual(last["content"][0]["type"], "tool_result")
+        text = " ".join(b.get("text", "") for b in last["content"] if isinstance(b, dict))
+        self.assertIn("tool execution limit", text)
 
     def test_max_turns_one_makes_one_call_when_the_model_answers(self):
         final = reply({"type": "text", "text": json.dumps(FINDINGS)})
@@ -546,9 +591,16 @@ class ExtractFindingsTest(unittest.TestCase):
     def test_findings_must_be_a_list(self):
         self.assertIsNone(om.extract_findings('{"findings": "no"}', set()))
 
-    def test_missing_read_falls_back_to_files_read_then_dot(self):
+    def test_read_is_always_what_the_tools_opened(self):
         self.assertEqual(om.extract_findings('{"findings": []}', {"b", "a"})["read"], ["a", "b"])
-        self.assertEqual(om.extract_findings('{"findings": []}', set())["read"], ["."])
+        # Nothing read is reported as nothing read -- never ".": the shell gate rejects
+        # "no findings and nothing read", and a placeholder would make that impossible.
+        self.assertEqual(om.extract_findings('{"findings": []}', set())["read"], [])
+
+    def test_a_claimed_read_does_not_replace_the_files_actually_read(self):
+        self.assertEqual(
+            om.extract_findings('{"findings": [], "read": ["claimed.dart"]}', {"a.dart"})["read"],
+            ["a.dart"])
 
 
 if __name__ == "__main__":

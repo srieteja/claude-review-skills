@@ -458,7 +458,10 @@ else
     IMPLEMENTER=""; DEFER_AT=""; DEFER_WHY=""; AUTH_FAIL=""
     for impl in $IMPLEMENTERS; do
       case "$impl" in
-        claude) wrap=""; m="$MODEL" ;;
+        # anthropic_env, not an empty wrap: this child can run Bash, so an exported
+        # ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL must not route it,
+        # and REVIEW_CLAUDE_CONFIG_DIR has to reach it as CLAUDE_CONFIG_DIR.
+        claude) wrap=anthropic_env; m="$MODEL" ;;
         ollama)
           [ -n "${OLLAMA_API_KEY:-}" ] || { warn "implementer ollama skipped: OLLAMA_API_KEY is unset"; continue; }
           wrap=ollama_env; m="$OLLAMA_MODEL" ;;

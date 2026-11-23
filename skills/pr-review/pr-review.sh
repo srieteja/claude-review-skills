@@ -467,12 +467,43 @@ slice_ok() {
 # slice_unchecked <slice.json> <slice.diff>: the changed files "checked" does not name, one per line.
 # An entry names a file when it is the path, or the path then ":" and a note (never a longer path).
 slice_unchecked() {
-  local f
-  sed -n 's|^diff --git a/.* b/||p' "$2" | while IFS= read -r f; do
+  local f line
+  # Two header forms. Unquoted, git prints `diff --git a/<path> b/<path>`; a path with a
+  # quote or non-ASCII byte is C-quoted on both sides (`diff --git "a/..." "b/..."`). The
+  # quoted form's b-side token is unescaped (\", \\) before it is compared with "checked".
+  # Spaces are not quoted, so the plain form stays the greedy read up to the last " b/".
+  while IFS= read -r line; do
+    case "$line" in
+      'diff --git "'*)
+        f="${line##*\" \"}"; f="${f%\"}"
+        case "$f" in b/*) f="${f#b/}" ;; *) f="" ;; esac
+        f="${f//\\\\/\\}"
+        f="${f//\\\"/\"}"
+        ;;
+      'diff --git '*)
+        f="${line##* b/}"
+        ;;
+      *) continue ;;
+    esac
     [ -n "$f" ] || continue
     jq -e --arg f "$f" '(.checked // []) | any(.[]; type == "string" and (. == $f or startswith($f + ":")))' "$1" >/dev/null 2>&1 \
       || printf '%s\n' "$f"
-  done
+  done < "$2"
+}
+
+# fail_slice <key> <why>: the whole failure path, in one place. Called once the slice has been
+# judged, and again from an EXIT trap while that judgement is being made: a diagnostic (the
+# coverage list, the transcript summary) must never be able to abort the subshell before the
+# slice file is moved. A leftover $WORK/slices/<key>.json is counted as a reviewed slice by
+# the accounting loop, which would report "No findings" for files nobody read.
+fail_slice() {
+  local key="$1" why="$2" ext
+  for ext in json err prompt; do cp "$WORK/chunks/$key.$ext" "$FAILED/" 2>/dev/null || true; done
+  [ ! -f "$WORK/slices/$key.json" ] || mv "$WORK/slices/$key.json" "$FAILED/$key.out.json" 2>/dev/null || true
+  { printf '%s\n' "$why"; tail -n 20 "$WORK/chunks/$key.err" 2>/dev/null; } \
+    > "$FAILED/$key.reason" 2>/dev/null || true
+  printf '\033[33m    %-7s FAILED — %s\033[0m\n' "$key" "$why" >&2
+  : > "$WORK/done/$key" 2>/dev/null || true
 }
 
 # Turns an ollama result envelope into $out, or leaves $out absent. Absent is the right
@@ -561,10 +592,13 @@ review_slice() {
   jq -L "$HERE" -r 'include "last-event"; quota_hit' \
     "$WORK/chunks/$key.json" > "$WORK/chunks/$key.quota" 2>/dev/null || true
   if [ -s "$WORK/chunks/$key.quota" ]; then
-    mv "$WORK/chunks/$key.quota" "$WORK/quota"
-    # When the limit lifts, if it says: one line per limited slice, the earliest is used.
+    # The scheduler reads $WORK/quota as the signal, and may kill this worker as soon as it
+    # appears. Write the reset first: when the limit lifts, if it says (one line per limited
+    # slice, the earliest is used). Publishing last means a visible signal always has its
+    # reset beside it, instead of leaving a reader to fall back to five hours.
     jq -L "$HERE" -r 'include "last-event"; quota_reset // empty' "$WORK/chunks/$key.json" \
       >> "$WORK/quota.reset" 2>/dev/null || true
+    mv "$WORK/chunks/$key.quota" "$WORK/quota"
   fi
   # A signed-out, unpaid or unauthorised account is a failure to fix, not a limit that lifts.
   jq -L "$HERE" -r 'include "last-event"; auth_hit' "$WORK/chunks/$key.json" > "$WORK/chunks/$key.auth" 2>/dev/null || true
@@ -573,29 +607,37 @@ review_slice() {
   # AGY_ERROR line counts only when the call also failed: a run that exited 0 delivered, and
   # a stderr line that merely mentions a limit is not a spent account.
   if [ "$F_TRANSPORT" = agy ] && [ ! -s "$WORK/quota" ] && agy_quota_hit "$WORK/chunks/$key.err" "${agy_rc:-0}"; then
+    # agy names no reset, so the flat fallback applies; still publish the signal last, as above.
     echo "agy $F_MODEL: RESOURCE_EXHAUSTED, $(grep -m1 '^AGY_ERROR:' "$WORK/chunks/$key.err" \
-      | sed 's/^AGY_ERROR: *//' | jq -r '.short_error // empty' 2>/dev/null)" > "$WORK/quota"
+      | sed 's/^AGY_ERROR: *//' | jq -r '.short_error // empty' 2>/dev/null)" \
+      > "$WORK/chunks/$key.quota"
+    mv "$WORK/chunks/$key.quota" "$WORK/quota"
   fi
   if slice_ok "$out" "$diff"; then
     cp "$out" "$hit"
     printf '    %-7s %s finding(s)\n' "$key" "$(jq '.findings|length' "$out")" >&2
   else
+    # Belt and braces: even if a diagnostic below aborts the subshell, fail_slice still moves
+    # $out and records the reason before the accounting loop runs.
+    why=''
+    trap 'fail_slice "$key" "${why:-slice failed}"' EXIT
     if [ -s "$out" ] && jq -e '(.findings|type=="array") and (.findings|length==0) and (.read|type=="array" and length>0)' "$out" >/dev/null 2>&1; then
-      why="empty result without full coverage: \"checked\" does not name $(slice_unchecked "$out" "$diff" | head -3 | paste -sd, -)"
+      # sed -n '1,3p' reads all of its input, so the producer can never take SIGPIPE; the
+      # substitution is || true'd so a broken diff degrades to an empty list, never an abort.
+      unchecked="$(slice_unchecked "$out" "$diff" 2>/dev/null | sed -n '1,3p' | paste -sd, - 2>/dev/null || true)"
+      why="empty result without full coverage: \"checked\" does not name $unchecked"
     elif jq -e '(.findings|type=="array") and (.findings|length==0) and
               ((.read|type!="array") or (.read|length==0))' "$out" >/dev/null 2>&1; then
       why='no-op: no findings and nothing read'
     elif [ -s "$WORK/chunks/$key.json" ]; then
       why="$(jq -L "$HERE" -r "$LAST_EVENT"'
                     | "\(.subtype // .error // "no findings produced") after \(.num_turns // 0) turns, $\(.total_cost_usd // 0 | .*100 | floor / 100)"' \
-            "$WORK/chunks/$key.json" 2>/dev/null || echo 'unparseable output')"
+            "$WORK/chunks/$key.json" 2>/dev/null || echo 'unparseable output')" || why='unparseable output'
     else
       why='no output (empty transcript)'
     fi
-    for ext in json err prompt; do cp "$WORK/chunks/$key.$ext" "$FAILED/" 2>/dev/null || true; done
-    [ ! -f "$out" ] || mv "$out" "$FAILED/$key.out.json"
-    { printf '%s\n' "$why"; tail -n 20 "$WORK/chunks/$key.err" 2>/dev/null; } > "$FAILED/$key.reason"
-    printf '\033[33m    %-7s FAILED — %s\033[0m\n' "$key" "$why" >&2
+    fail_slice "$key" "$why"
+    trap - EXIT
   fi
   : > "$WORK/done/$key"
 }
@@ -630,11 +672,11 @@ else
   count() { echo $#; }
   NTEST=$(awk -F"$TAB" '$1 ~ /^t/' "$WORK/bins.tsv" | wc -l | tr -d ' ')
   if [ -s "$WORK/chunks/_cross.diff" ]; then
-    ALL="$KEYS _cross"; CROSS='+ 1 cross-cutting pass'
+    ALL="$KEYS _cross"; CROSS_SAY='+ 1 cross-cutting pass'
   else
-    ALL="$KEYS"; CROSS='and no cross-cutting pass (nothing in the diff matches PR_REVIEW_CROSS_RE)'
+    ALL="$KEYS"; CROSS_SAY='and no cross-cutting pass (nothing in the diff matches PR_REVIEW_CROSS_RE)'
   fi
-  say "stage 1: $LABELS, $(count $KEYS) feature slice(s) $CROSS, $S1_JOBS at a time per transport"
+  say "stage 1: $LABELS, $(count $KEYS) feature slice(s) $CROSS_SAY, $S1_JOBS at a time per transport"
   if [ "$BRIEF_OK" -eq 1 ]; then
     say "         $NTEST test file(s) in $(count $TKEYS) test slice(s), alongside the feature slices with the brief as context"
   else
@@ -887,7 +929,7 @@ LANES="$(jq -r -L "$HERE" --arg s "$(jq -r .state "$OUTDIR/meta.json")" \
   'include "lanes"; fix_lanes($s) | join(" ")' "$OUTDIR/merged.json")"
 [ "${AUTOFIX_LINT:-0}" != 1 ] || LANES="$LANES lint"
 say "stage 5: fix PRs for $AUTHOR's $CONFIRMED confirmed finding(s) -- lanes: $LANES"
-OWED=0
+OWED=0; DEFERRED=0
 for lane in $LANES; do
   rc=0
   FIX="$(env -u AUTOFIX_MODE -u AUTOFIX_FROZEN AUTOFIX_LANE="$lane" AUTOFIX_REVIEWER="$AUTHOR" \
@@ -896,8 +938,12 @@ for lane in $LANES; do
   case "$rc:$FIX" in
     0:*STATUS=opened:*|0:*STATUS=exists:*|0:*STATUS=none*) ;;
     0:*STATUS=dropped*) warn "stage 5: the trunk lane found nothing to fix on trunk -- dropped; see $OUT" ;;
+    # A rate-limited implementer is not a failure to fix: relay its deferral and its reset,
+    # and let the caller pause. Nothing is owed, so OWED stays clear.
+    75:*STATUS=deferred*) DEFERRED=1; warn "stage 5: #$PR is deferred ($lane lane, rate-limited); the findings stand in $OUT" ;;
     *STATUS=stale*) OWED=1; warn "stage 5: #$PR moved past ${SHA:0:12} during the review -- NO fix PR opened ($lane lane); re-run the review" ;;
     *) OWED=1; warn "stage 5: autofix opened NO fix PR for #$PR ($lane lane, exit $rc) -- see above; the findings stand in $OUT" ;;
   esac
 done
+[ "$DEFERRED" = 0 ] || exit 75
 [ "$OWED" = 0 ] || exit 4

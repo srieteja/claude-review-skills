@@ -487,11 +487,13 @@ if [ "$STATE" = MERGED ]; then
     printf '%s\n' "$OUT" | grep -m1 '^STATUS=exists:' || echo "STATUS=merged-clean"
     exit 0
   fi
+  # The lint lane runs before the freeze, like every side lane below: if it defers (75) it
+  # must leave no decision behind for --ship to post.
+  prepare_side lint
   freeze fix "fix: $CONFIRMED confirmed; #$PR merged, so the trunk lane fixes them on its base"
   learn record prepare "$OUTDIR"
   echo "STATUS=prepared"; echo "DECISION=fix"
   say "read $REPORT and $(lane_dir trunk)/{fix.patch,title,body.md}, then: peer-review.sh $PR --ship"
-  prepare_side lint
   exit 0
 fi
 

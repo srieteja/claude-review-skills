@@ -509,6 +509,13 @@ check "  one lane, whoever the author"             [ "$(calls autofix)" = 1 ]
 check "  and it is trunk"                          logged autofix "LANE=trunk"
 check "  nothing stacked"                          [ ! -e "$INT/autofix/fix.patch" ]
 check "  says why"                                 why "$INT" "fix: 1 confirmed; #7 merged, so the trunk lane fixes them on its base"
+# The lint lane runs before the freeze, so a deferral leaves nothing for --ship to post.
+setup; export STUB_PRVIEW="$(prview alice false MERGED false)" STUB_REVIEW="$(merged "$(finding CONFIRMED c1)")" \
+  AUTOFIX_LINT=1 STUB_AUTOFIX_OUT_lint="$DEFERRED" STUB_AUTOFIX_RC_lint=75; run 7
+check "merged, lint lane deferred: exits 75"        rc_is 75
+check "  relays deferred"                           said "STATUS=deferred"
+check "  and when to resume"                        said "RESUME_AT=1793300000"
+check "  no decision left for --ship"               absent "$INT/decision"
 setup; export STUB_PRVIEW="$(prview alice false MERGED false)"; run 7
 check "merged, nothing confirmed: merged-clean"    said "STATUS=merged-clean"
 check "  nothing decided"                          [ ! -e "$INT/decision/decision" ]

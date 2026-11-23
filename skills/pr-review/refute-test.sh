@@ -55,6 +55,7 @@ case " ${STUB_CLAUDE_QUOTA_MODELS:-} " in *" $cm "*) STUB_CLAUDE_STATUS=403 ;; e
 [ -z "${STUB_TOKEN_LOG:-}" ] || printf '%s' "${ANTHROPIC_AUTH_TOKEN:-}" > "$STUB_TOKEN_LOG"
 [ -z "${STUB_ENV_LOG:-}" ] || printf 'base=%s simple=%s ollama=%s\n' \
   "${ANTHROPIC_BASE_URL:-}" "${CLAUDE_CODE_SIMPLE:-}" "${OLLAMA_API_KEY:+set}" > "$STUB_ENV_LOG"
+[ -z "${STUB_FAST_LOG:-}" ] || printf '%s' "${ANTHROPIC_SMALL_FAST_MODEL:-}" > "$STUB_FAST_LOG"
 if [ -n "${STUB_CLAUDE_STATUS:-}" ]; then
   printf '[{"type":"result","is_error":true,"api_error_status":%s,"result":"%s"}]\n' \
     "$STUB_CLAUDE_STATUS" "${STUB_CLAUDE_RESULT:-API Error}"; exit 0
@@ -216,6 +217,12 @@ check "different claim: both checked"              [ "$(calls)" = "m1 m1" ]
 specs "anthropic.c01-F1 a.dart 1 same" "agy.c01-F1 a.dart 1 same" > "$SB/f.json"
 run --model m1
 check "different finder family: both checked"      [ "$(calls)" = "m1 m1" ]
+# A string "line" used to make the dedup's subtraction exit 5, killing refute after stage 1.
+specs 'F1 a.dart 1 same' 'F2 a.dart "nope" same' > "$SB/f.json"
+run --model m1
+check "a non-numeric line does not abort refute"    [ "$RC" -eq 0 ]
+check "  the numeric claim still gets a verdict"    [ "$(verdict F1 verdict)" = REFUTED ]
+check "  and so does the one with the string line"  [ "$(verdict F2 verdict)" = REFUTED ]
 specs "F1 a.dart 1 same" "F2 a.dart 3 same" "F3 a.dart 5 same" > "$SB/f.json"
 run --model m1
 check "compared to the representative, not a chain" [ "$(calls)" = "m1 m1" ]
@@ -322,6 +329,12 @@ STUB_QUOTA_MODELS=g1 run --chain "$CH"
 check "a spent link is skipped by later claims"     [ "$(calls)" = "g1 claude claude" ]
 PR_REVIEW_REFUTER_CHAIN="$CH" STUB_QUOTA_MODELS=g1 run
 check "PR_REVIEW_REFUTER_CHAIN is the same chain"   [ "$(cat "$SB/calls.models" | tr '\n' ' ')" = "glm-x glm-x " ]
+# ollama_env copies $MODEL into the small/fast tiers. In chain mode the global MODEL is empty,
+# so the entry's model must be handed to the wrapper or a gemini id would 404 nested calls.
+rm -f "$SB/fast"
+STUB_FAST_LOG="$SB/fast" run --chain "ollama:glm-5.3-flash"
+check "an ollama chain entry pins its own model for nested calls" \
+  [ "$(cat "$SB/fast" 2>/dev/null)" = glm-5.3-flash ]
 
 ( unset OLLAMA_API_KEY; claims F1 > "$SB/f.json"; STUB_QUOTA_MODELS=g1 run --chain "$CH"; exit "$RC" )
 check "chain without an ollama key drops that link" [ "$?" = 0 ]

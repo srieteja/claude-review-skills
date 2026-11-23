@@ -202,9 +202,12 @@ repo_state > "$WORK/repo.pre"
 # duplicate, so a run of adjacent restatements cannot chain into an unrelated line.
 jq -r '
   def fam: .id | split(".") | if length > 1 then .[0] else "" end;
+  # A finder may report a non-numeric line ("nope", "12-14", null). Coercing it to 0 keeps
+  # the subtraction from making jq exit 5 and killing refute after stage 1 has been paid for.
+  def ln: .line | if type == "number" then . else 0 end;
   reduce .findings[] as $f ({reps: [], out: []};
     (.reps | map(select(.file == $f.file and .claim == $f.claim and fam == ($f | fam)
-                        and (((.line // 0) - ($f.line // 0)) | fabs) <= 3)) | first) as $r
+                        and (((ln - ($f | ln)) | fabs) <= 3))) | first) as $r
     | if $r then .out += [[$f.id, $r.id]]
       else .reps += [$f] | .out += [[$f.id, $f.id]] end)
   | .out[] | @tsv' "$FINDINGS" > "$WORK/groups.tsv"
@@ -249,7 +252,9 @@ ask_validator() { # id attempt entry
              --print-timeout "$TIMEOUT" --json-schema "$WORK/verdict.schema.json" \
              -p="$(cat "$WORK/claims/$id.prompt")" ;;
          anthropic|ollama)
-           "${t}_env" "$TIMEOUT_BIN" "$TIMEOUT" \
+           # Pin the wrapper to this chain entry's model: ollama_env copies $MODEL into the
+           # small/fast tiers, and a gemini id left there would 404 any nested background call.
+           MODEL="$m" "${t}_env" "$TIMEOUT_BIN" "$TIMEOUT" \
              claude -p "$(cat "$WORK/claims/$id.prompt")" --model "$m" \
              ${effargs[@]+"${effargs[@]}"} \
              --output-format json --json-schema "$SCHEMA_INLINE" \

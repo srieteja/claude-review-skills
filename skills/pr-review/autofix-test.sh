@@ -40,6 +40,9 @@ cat > "$SB/bin/claude" <<'STUB'
 #!/usr/bin/env bash
 # One line per call; the flags, the prompt and where it ran are kept for the checks.
 echo call >> "$STUB_LOG/claude"
+printf 'api_key=%s\nauth=%s\nbase=%s\ncfg=%s\n' \
+  "${ANTHROPIC_API_KEY:-}" "${ANTHROPIC_AUTH_TOKEN:-}" "${ANTHROPIC_BASE_URL:-}" "${CLAUDE_CONFIG_DIR:-}" \
+  > "$STUB_LOG/claude.env"
 [ -z "${ANTHROPIC_BASE_URL:-}" ] || { echo "$ANTHROPIC_BASE_URL $ANTHROPIC_AUTH_TOKEN $*" >> "$STUB_LOG/ollama"; }
 printf '%s\n' "$@" > "$STUB_LOG/claude.args"
 pwd > "$STUB_LOG/claude.cwd"; git rev-parse HEAD > "$STUB_LOG/claude.head"
@@ -206,6 +209,7 @@ rc_is()   { [ "$rc" = "$1" ]; }
 said()    { grep -qxF -- "$1" "$C/stdout"; }                 # an exact STATUS=/REVIEWER= line
 logged()  { [ -f "$C/log/$1" ] && grep -qF -- "$2" "$C/log/$1"; }
 never()   { ! logged "$@"; }
+absent()  { ! grep -qE -- "$2" "$1" 2>/dev/null; }
 calls()   { if [ -f "$C/log/$1" ]; then wc -l < "$C/log/$1" | tr -d ' '; else echo 0; fi; }
 pushed()  { git --git-dir="$C/remotes/acme/widgets.git" rev-parse -q --verify refs/heads/$FB; }
 unpushed() { ! pushed; }
@@ -295,6 +299,21 @@ check "AUTOFIX_BUDGET=none uncaps it"          sh -c "! grep -qxF -- --max-budge
 
 setup; mkdir -p "$SB/alt"; cp "$SB/bin/claude" "$SB/alt/my-claude"; export AUTOFIX_CLAUDE="$SB/alt/my-claude"; run
 check "AUTOFIX_CLAUDE swaps the implementer"   said "STATUS=opened:$URL"
+
+# The claude implementer can run Bash, so it gets the same mirror contract as every other
+# anthropic call: exported routing/keys are stripped, and REVIEW_CLAUDE_CONFIG_DIR arrives
+# as CLAUDE_CONFIG_DIR. Without anthropic_env all three reach the child.
+echo "implementer environment — the claude child gets the mirror contract"
+setup; mkdir -p "$SB/cfgdir"
+export ANTHROPIC_API_KEY=sk-test-secret ANTHROPIC_AUTH_TOKEN=token-test-secret \
+       ANTHROPIC_BASE_URL=https://evil.example REVIEW_CLAUDE_CONFIG_DIR="$SB/cfgdir"; run
+check "the implementer still runs on the login"  rc_is 0
+check "  no exported ANTHROPIC_API_KEY reaches it"  absent "$C/log/claude.env" '^api_key=.'
+check "  nor ANTHROPIC_AUTH_TOKEN"                  absent "$C/log/claude.env" '^auth=.'
+check "  nor ANTHROPIC_BASE_URL"                    absent "$C/log/claude.env" '^base=.'
+check "  REVIEW_CLAUDE_CONFIG_DIR arrives as CLAUDE_CONFIG_DIR" \
+  grep -qx "cfg=$SB/cfgdir" "$C/log/claude.env"
+unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL REVIEW_CLAUDE_CONFIG_DIR
 
 echo "implementer"
 setup; export STUB_CLAUDE_RC=1; run

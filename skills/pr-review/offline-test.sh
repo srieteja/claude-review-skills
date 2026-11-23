@@ -138,7 +138,8 @@ fi
 if [ -n "${STUB_EMPTY:-}" ]; then
   chk="$(sed -n 's|^diff --git a/.* b/||p' "$diff" | jq -R '. + ": traced callers"' | jq -sc .)"
   [ -z "${STUB_NOCHECK:-}" ] || chk='[]'
-  printf '{"findings":[],"read":["x"],"checked":%s}\n' "$chk" > "$out"; echo '{"type":"result","result":"0"}'; exit 0
+  rd='["x"]'; [ -z "${STUB_NOREAD:-}" ] || rd='[]'
+  printf '{"findings":[],"read":%s,"checked":%s}\n' "$rd" "$chk" > "$out"; echo '{"type":"result","result":"0"}'; exit 0
 fi
 case "$key" in *c02)
   echo 'stub: simulated limit at /Users/someone/private/path' >&2
@@ -219,6 +220,7 @@ lane="${AUTOFIX_LANE:-stacked}"; echo "$lane" >> "$STUB_LOG/lanes"
 # STUB_AUTOFIX_STATUS_<lane> answers that lane alone, over STUB_AUTOFIX_STATUS.
 eval "st=\${STUB_AUTOFIX_STATUS_$lane:-\${STUB_AUTOFIX_STATUS:-opened:https://github.com/acme/widgets/pull/99}}"
 echo "STATUS=$st"
+[ -z "${STUB_AUTOFIX_RESUME:-}" ] || echo "RESUME_AT=$STUB_AUTOFIX_RESUME"
 exit "${STUB_AUTOFIX_RC:-0}"
 STUB
 chmod +x "$SANDBOX/stub/claude" "$SANDBOX/stub/agy" "$SANDBOX/stub/autofix"
@@ -246,11 +248,24 @@ unchecked() { # <checked-json-array>: the files of a one-file diff the entry lea
   printf '{"findings":[],"read":["x"],"checked":%s}\n' "$1" > "$SANDBOX/cov.json"
   bash -c "$(sed -n '/^slice_unchecked()/,/^}/p' "$HERE/pr-review.sh"); slice_unchecked \"\$1\" \"\$2\"" _ "$SANDBOX/cov.json" "$SANDBOX/cov.diff"
 }
+unchecked_diff() { # <diff> <checked-json-array>: the files that diff's headers leave uncovered
+  printf '%s\n' "$1" > "$SANDBOX/cov.diff"
+  printf '{"findings":[],"read":["x"],"checked":%s}\n' "$2" > "$SANDBOX/cov.json"
+  bash -c "$(sed -n '/^slice_unchecked()/,/^}/p' "$HERE/pr-review.sh"); slice_unchecked \"\$1\" \"\$2\"" _ "$SANDBOX/cov.json" "$SANDBOX/cov.diff"
+}
 check "an entry of path: text covers the file" test -z "$(unchecked '["lib/a.dart: traced callers"]')"
 check "  and the bare path does too" test -z "$(unchecked '["lib/a.dart"]')"
 check "lib/a.dart.bak does not cover lib/a.dart" test "$(unchecked '["lib/a.dart.bak: looked"]')" = lib/a.dart
 check "  nor does a longer path ending in it" test "$(unchecked '["xlib/a.dart: looked"]')" = lib/a.dart
 check "  nor a mention inside the text" test "$(unchecked '["notes: also see lib/a.dart"]')" = lib/a.dart
+# A path with a quote (or non-ASCII bytes) is C-quoted in the header. It used to be lost,
+# so a slice could report empty coverage and pass. Both forms are parsed; \" and \\ unescape.
+QD='diff --git "a/lib/a\"b.dart" "b/lib/a\"b.dart"
+diff --git a/lib/plain.dart b/lib/plain.dart'
+check "a quoted header path and a plain one are both changed" \
+  test "$(unchecked_diff "$QD" '[]')" = "$(printf 'lib/a"b.dart\nlib/plain.dart')"
+check "  and both are covered by their checked entries" \
+  test -z "$(unchecked_diff "$QD" '["lib/a\"b.dart","lib/plain.dart"]')"
 
 # quota_hit: a limit is reported by an error event, never by a successful result's own text.
 quota() { printf '%s' "$1" | jq -r -L "$HERE" 'include "last-event"; quota_hit // "none"'; }
@@ -456,6 +471,27 @@ check "an empty result without \"checked\" fails its slice, naming a file" grep 
 check "  and when every slice does, the run dies instead of reporting a clean pass" grep -q 'every slice failed' "$d.log"
 check "  a slice naming several files is rejected too (c04 and _cross)" \
   bash -c '! grep -q "c04     0 finding" "$1" && ! grep -q "_cross  0 finding" "$1"' _ "$d.log"
+# The ollama client reports read: [] when no tool actually ran. Zero findings beside an empty
+# read is the shell gate's other rejection: nothing read and nothing found is not a review.
+zero_run no-read STUB_NOREAD=1
+check "zero findings with an empty read is rejected as a no-op" \
+  grep -q 'no-op: no findings and nothing read' "$d/$AUTHOR/widgets/$PIN_PR/failed-slices/c01.reason"
+check "  its reason is not 'did not run'" \
+  absent "$d/$AUTHOR/widgets/$PIN_PR/failed-slices/c01.reason" 'did not run'
+check "  and it produces no clean No findings report" test ! -e "$ZREPORT"
+# Four or more unchecked files is where the diagnostic used to kill the failure path: the
+# coverage list was piped through `head -3`, slice_unchecked took SIGPIPE under pipefail, and
+# the slice subshell died before moving $out -- so the leftover slice file was counted as
+# reviewed and the report said "No findings" for files nobody read. One big slice (five
+# feature files) makes the coverage list longer than the three lines head would read.
+zero_run many-unchecked STUB_NOCHECK=1 PR_REVIEW_CHUNK_BYTES=100000
+UNCHECKED_REASON="$d/$AUTHOR/widgets/$PIN_PR/failed-slices/c01.reason"
+check "a slice with five unchecked files is failed, with its coverage reason" \
+  grep -q 'does not name' "$UNCHECKED_REASON"
+check "  the reason is the coverage message, not 'did not run'" \
+  absent "$UNCHECKED_REASON" 'did not run'
+check "  it is not counted as reviewed: the run dies" grep -q 'every slice failed' "$d.log"
+check "  and no No findings report is produced" test ! -e "$ZREPORT"
 zero_run anthropic-failed "${TWO[@]}" STUB_CLAUDE_FAIL=1
 check "every anthropic slice failed: no plain No findings headline" absent "$ZREPORT" '^\*\*No findings\.\*\*'
 check "  the headline names only the finder that ran" grep -qx '\*\*No findings reported\*\* by gemini-x via agy\.' "$ZREPORT"
@@ -520,6 +556,17 @@ check "a reset time already past today means tomorrow" test "$(resume_at)" = "$(
 quota_run quota-nozone "12:30am (Asia/Calcutta)"
 check "a reset in a zone it cannot read: exits 75" test "$rc" -eq 75
 check "  RESUME_AT is the flat fallback" sh -c "t=\$(sed -n 's/^RESUME_AT=//p' '$d.out'); [ \$((t - \$(date +%s))) -ge 900 ] && [ \$((t - \$(date +%s))) -le 1100 ]"
+
+# The scheduler treats $WORK/quota as the signal and may kill the worker at once, then read
+# quota.reset. The reset has to be on disk before the signal appears, not after it.
+d="$SANDBOX/quota-reset"; rc=0; t=$(( $(date +%s) + 7200 ))
+( for ((_n=0;_n<30;_n++)); do sleep 2; pkill -f '[s]leep 4711'; done ) & watchdog=$!
+env PR_REVIEW_DIR="$d" STUB_QUOTA=1 STUB_QUOTA_WHEN="$(clock "$t") (UTC)" PR_REVIEW_STAGE1_JOBS=3 \
+  PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" "$HERE/pr-review.sh" "$PIN_PR" --no-cache --keep > "$d.out" 2> "$d.log" || rc=$?
+kill "$watchdog" 2>/dev/null || true; pkill -f '[s]leep 4711' 2>/dev/null || true
+QW="$(sed -n 's/.*work dir kept: //p' "$d.log" | head -n 1)"
+check "a quota signal always has its reset beside it" \
+  bash -c '[ -s "$1/quota" ] && [ -s "$1/quota.reset" ]' _ "$QW"
 
 # An account the finder is signed out of, or not authorised on, is not a limit that lifts: the
 # run fails naming it, with no deferral and no resume time. So is a 402 (unpaid). A 429, or the
@@ -638,6 +685,14 @@ check "PR_REVIEW_REFUTER pins a single refuter: no chain" test "$(chain_run pin 
 check "PR_REVIEW_REFUTER_FALLBACK set (even empty): no chain" test "$(chain_run fallback PR_REVIEW_REFUTER_FALLBACK=)" = "-"
 check "PR_REVIEW_REFUTER_CHAIN set: pr-review adds none, refute reads the explicit one" \
   test "$(chain_run explicit PR_REVIEW_REFUTER_CHAIN=agy:gemini-chain-y)" = "-"
+
+# The progress line's "cross-cutting pass" text is not the --cross flag. Reusing CROSS as the
+# log string made it non-empty on every run, so refute was always handed --cross.
+chain_run no-cross >/dev/null
+check "without PR_REVIEW_CROSS, refute is not passed --cross" \
+  bash -c '! grep -qx -- --cross "$1"' _ "$SANDBOX/refute.args"
+chain_run cross PR_REVIEW_CROSS=1 >/dev/null
+check "with PR_REVIEW_CROSS, refute is passed --cross" grep -qx -- '--cross' "$SANDBOX/refute.args"
 
 echo "claude signed out — the brief is skipped, the review runs"
 d="$SANDBOX/claude-out"
@@ -992,6 +1047,11 @@ check "  and says no fix PR was opened" grep -q 'NO fix PR' "$SANDBOX/fix.log"
 PR_REVIEW_FIX_AUTHORS="$AUTHOR" STUB_AUTOFIX_STATUS=none STUB_AUTOFIX_RC=1 fix_run
 check "autofix failed: exits 4" test "$rc" = 4
 check "  and says no fix PR was opened" grep -q 'NO fix PR' "$SANDBOX/fix.log"
+PR_REVIEW_FIX_AUTHORS="$AUTHOR" STUB_AUTOFIX_STATUS=deferred STUB_AUTOFIX_RC=75 STUB_AUTOFIX_RESUME=1793300000 fix_run
+check "a rate-limited implementer: exits 75" test "$rc" = 75
+check "  relaying the lane's deferral" grep -qx 'LANE=trunk STATUS=deferred' "$SANDBOX/fix.log"
+check "  and when to resume" grep -qx 'RESUME_AT=1793300000' "$SANDBOX/fix.log"
+check "  not reported as an owed PR" absent "$SANDBOX/fix.log" 'NO fix PR'
 
 rm -rf "$STUB_LOG"; mkdir -p "$STUB_LOG"; rc=0
 PATH="$SANDBOX/stub:$SANDBOX/fixture/gh:$PATH" OLLAMA_API_KEY=test-key-not-real PR_REVIEW_FIX_AUTHORS="$AUTHOR" \

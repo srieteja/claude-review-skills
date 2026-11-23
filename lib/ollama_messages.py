@@ -196,7 +196,9 @@ def extract_findings(text: str, files_read: Set[str]) -> Optional[Dict[str, Any]
     """The LAST JSON object in `text` that carries a "findings" list, else None.
 
     Last, not first: a model that quotes the schema back at itself mid-reasoning emits a decoy
-    before the real answer. An empty or missing "read" is filled from the files the tools opened.
+    before the real answer. "read" is always what the tools actually opened, never the model's
+    claim and never a placeholder: it is the evidence the shell gate checks for a no-findings
+    result, while "checked" stays the model's coverage claim.
     """
     best = None
     decoder = json.JSONDecoder()
@@ -212,8 +214,8 @@ def extract_findings(text: str, files_read: Set[str]) -> Optional[Dict[str, Any]
         except ValueError:
             pass
         idx += 1
-    if best is not None and (not isinstance(best.get("read"), list) or not best["read"]):
-        best["read"] = sorted(files_read) if files_read else ["."]
+    if best is not None:
+        best["read"] = sorted(files_read)
     return best
 
 
@@ -262,16 +264,39 @@ def run_conversation(api_key: str, endpoint: str, model: str, prompt: str, cwd: 
         if turn >= max_turns - 2:
             tool_results.append({
                 "type": "text",
-                "text": "You have gathered sufficient source context. Now output ONLY the final JSON object according to the schema: {\"findings\":[...], \"read\":[...]}",
+                "text": (
+                    "You have gathered sufficient source context. Now output ONLY the final JSON "
+                    "object according to the schema: {\"findings\":[...], \"read\":[...], "
+                    "\"checked\":[...]}. \"checked\" must hold one entry per changed file in the "
+                    "diff (its path, optionally followed by \": note\"); a reply with no findings "
+                    "still needs it."),
             })
         messages.append({"role": "user", "content": tool_results})
 
     # The loop ended with tool calls still pending (max turns): one last call, without tools.
     if tool_uses:
         turns_taken += 1
-        messages.append({"role": "user", "content": (
+        wrap = (
             "You have reached the tool execution limit. Synthesize your analysis and output "
-            "ONLY the final findings JSON object conforming to schema: {\"findings\": [...], \"read\": [...]}.")})
+            "ONLY the final findings JSON object conforming to schema: {\"findings\": [...], "
+            "\"read\": [...], \"checked\": [...]}. \"checked\" must hold one entry per changed "
+            "file in the diff (its path, optionally followed by \": note\"); a reply with no "
+            "findings still needs it.")
+        # The loop's last message is already a user turn carrying the tool results. A second
+        # user turn straight after it is rejected by the Messages API with HTTP 400, so add
+        # the wrap-up to that turn's content list and keep the payload alternating. The
+        # fallback appends only if the last role is not user, which the loop does not produce.
+        if messages and messages[-1].get("role") == "user":
+            content = messages[-1].get("content")
+            if isinstance(content, list):
+                content.append({"type": "text", "text": wrap})
+            else:
+                messages[-1]["content"] = [
+                    {"type": "text", "text": str(content)},
+                    {"type": "text", "text": wrap},
+                ]
+        else:
+            messages.append({"role": "user", "content": [{"type": "text", "text": wrap}]})
         final = call_messages_api(api_key, {
             "model": model,
             "max_tokens": max_tokens,
